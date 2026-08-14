@@ -1,0 +1,35 @@
+# AgentGuard v1 policy: file / command / network rules.
+# Patterns are matched against tool-call arguments by key name
+# (see PATH_ARG_KEYS / COMMAND_ARG_KEYS / URL_ARG_KEYS in agentguard/policy.py).
+
+file_access:
+  enabled: true
+  deny_patterns:
+    - "~/.ssh/**"
+    - "**/.ssh/**"
+    - "**/id_rsa*"
+    - "**/id_ed25519*"
+    - "**/.env"
+    - "**/.env.*"
+    - "**/.aws/credentials"
+    - "**/.aws/config"
+    - "**/*.pem"
+    - "**/*.key"
+
+command_exec:
+  enabled: true
+  deny_patterns:
+    - "rm\\s+-rf\\s+/"
+    - "curl[^|\\n]*\\|\\s*(sudo\\s+)?(sh|bash)"
+    - "wget[^|\\n]*\\|\\s*(sudo\\s+)?(sh|bash)"
+    - ":\\(\\)\\s*\\{\\s*:\\|\\s*:\\s*&\\s*\\}\\s*;"
+
+network:
+  enabled: true
+  allow_patterns:
+    - "*.github.com"
+    - "api.anthropic.com"
+    - "*.anthropic.com"
+    - "pypi.org"
+    - "*.pypi.org"
+  default_action: deny

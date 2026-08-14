@@ -1,0 +1,19 @@
+[project]
+name = "agentguard"
+version = "0.1.0"
+description = "A minimal-privilege proxy for MCP tool calls"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+agentguard = "agentguard.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agentguard*"]
