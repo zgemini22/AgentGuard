@@ -33,3 +33,26 @@ network:
     - "pypi.org"
     - "*.pypi.org"
   default_action: deny
+
+# Redaction runs on tool *output*, after a call has already been allowed
+# through by the rules above — a call can be legitimate and still return
+# something (a checked-in .env dump, a token embedded in an API
+# response) that shouldn't reach the agent's context unmasked.
+# Omit `rules` entirely to use agentguard.redact.DEFAULT_RULES.
+redaction:
+  enabled: true
+  rules:
+    - name: aws_access_key_id
+      pattern: "AKIA[0-9A-Z]{16}"
+    - name: aws_secret_access_key
+      pattern: "(?i)aws_secret_access_key[\"']?\\s*[:=]\\s*[\"']?[A-Za-z0-9/+=]{40}"
+    - name: github_token
+      pattern: "gh[pousr]_[A-Za-z0-9]{36,}"
+    - name: slack_token
+      pattern: "xox[baprs]-[A-Za-z0-9-]{10,}"
+    - name: private_key_block
+      pattern: "-----BEGIN[ A-Z]*PRIVATE KEY-----[\\s\\S]*?-----END[ A-Z]*PRIVATE KEY-----"
+    - name: jwt
+      pattern: "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"
+    - name: generic_api_key
+      pattern: "(?i)(api[_-]?key|secret|token)[\"']?\\s*[:=]\\s*[\"'][A-Za-z0-9_\\-]{16,}[\"']"

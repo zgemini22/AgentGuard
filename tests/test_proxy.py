@@ -7,6 +7,7 @@ import tempfile
 from agentguard.audit import AuditLog
 from agentguard.policy import PolicyEngine
 from agentguard.proxy import MCPProxy
+from agentguard.redact import SecretRedactor
 
 DEMO_SERVER = os.path.join(os.path.dirname(__file__), "..", "demo", "vulnerable_server.py")
 
@@ -27,6 +28,7 @@ def run_proxy(requests, config=CONFIG):
             [sys.executable, DEMO_SERVER],
             PolicyEngine(config),
             AuditLog(audit_path),
+            redactor=SecretRedactor.from_config(config),
             stdin=stdin,
             stdout=stdout,
             stderr=sys.stderr,
@@ -92,3 +94,33 @@ def test_non_tool_call_messages_pass_through_untouched():
     assert len(responses) == 1
     assert responses[0]["result"]["serverInfo"]["name"] == "agentguard-demo-vulnerable-server"
     assert audit_entries == []
+
+
+def test_redacts_secret_found_in_allowed_tool_output(tmp_path):
+    fake_key = "AKIA" + "B" * 16
+    creds_path = tmp_path / "creds.txt"
+    creds_path.write_text(f"aws key: {fake_key}")
+
+    config = {
+        "redaction": {
+            "enabled": True,
+            "rules": [{"name": "aws_access_key_id", "pattern": r"AKIA[0-9A-Z]{16}"}],
+        },
+    }
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "read_file", "arguments": {"path": str(creds_path)}},
+        },
+    ]
+    responses, audit_entries = run_proxy(requests, config=config)
+
+    call_response = next(r for r in responses if r.get("id") == 2)
+    assert fake_key not in json.dumps(call_response)
+    assert "[REDACTED:aws_access_key_id]" in call_response["result"]["content"][0]["text"]
+
+    redaction_events = [e for e in audit_entries if e.get("event") == "redaction"]
+    assert len(redaction_events) == 1
+    assert redaction_events[0]["rules_matched"] == ["aws_access_key_id"]
+    assert redaction_events[0]["tool"] == "read_file"

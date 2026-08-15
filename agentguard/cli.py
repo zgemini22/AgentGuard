@@ -6,9 +6,12 @@ import argparse
 import sys
 from typing import List, Optional
 
+import yaml
+
 from .audit import AuditLog
 from .policy import PolicyEngine
 from .proxy import MCPProxy
+from .redact import SecretRedactor
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,9 +42,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not server_cmd:
         parser.error("missing MCP server command; usage: agentguard run --config <policy.yaml> -- <cmd...>")
 
-    policy = PolicyEngine.from_yaml(args.config)
+    with open(args.config, "r") as f:
+        raw_config = yaml.safe_load(f) or {}
+
+    policy = PolicyEngine(raw_config)
+    redactor = SecretRedactor.from_config(raw_config)
     audit = AuditLog(args.audit_log)
-    proxy = MCPProxy(server_cmd, policy, audit)
+    proxy = MCPProxy(server_cmd, policy, audit, redactor=redactor)
     return proxy.run()
 
 
