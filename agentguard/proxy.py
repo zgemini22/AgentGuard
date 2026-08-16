@@ -8,10 +8,16 @@ immediately, and the real server never sees the request. Every other
 message (initialize, tools/list, notifications, ...) is passed through
 untouched in both directions.
 
-Responses are also inspected: a `tools/call` result's text content is
-run through the SecretRedactor before being forwarded to the agent, so a
-call the policy allowed can still have its output scrubbed of secrets it
-happened to return.
+Responses are also inspected, in two passes, for a `tools/call` result
+the policy already allowed through:
+
+1. InjectionDetector scans the text content for instruction-shaped text
+   (the poisoned-webpage attack: fetched content trying to redirect what
+   the agent does next). A hit blocks the *entire* result — it's
+   replaced with an isError result — rather than trying to strip just
+   the offending sentence.
+2. If nothing was blocked, SecretRedactor scans and masks known secret
+   formats in what's left, in place.
 """
 
 from __future__ import annotations
@@ -20,9 +26,10 @@ import json
 import subprocess
 import sys
 import threading
-from typing import IO, Dict, List, Optional
+from typing import IO, Dict, List, Optional, Tuple
 
 from .audit import AuditLog
+from .injection import InjectionDetector
 from .policy import PolicyEngine
 from .redact import SecretRedactor
 
@@ -36,6 +43,7 @@ class MCPProxy:
         policy: PolicyEngine,
         audit: AuditLog,
         redactor: Optional[SecretRedactor] = None,
+        injection_detector: Optional[InjectionDetector] = None,
         stdin: IO[str] = sys.stdin,
         stdout: IO[str] = sys.stdout,
         stderr: IO[str] = sys.stderr,
@@ -44,6 +52,7 @@ class MCPProxy:
         self.policy = policy
         self.audit = audit
         self.redactor = redactor
+        self.injection_detector = injection_detector
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
@@ -52,6 +61,11 @@ class MCPProxy:
         # client->server thread, read/popped by the server->client thread.
         self._pending_tool_calls: Dict[object, str] = {}
         self._pending_lock = threading.Lock()
+
+    def _output_inspection_enabled(self) -> bool:
+        return (self.redactor is not None and self.redactor.enabled) or (
+            self.injection_detector is not None and self.injection_detector.enabled
+        )
 
     def run(self) -> int:
         proc = subprocess.Popen(
@@ -104,7 +118,7 @@ class MCPProxy:
         self.audit.record(tool_name, arguments, decision)
 
         if decision.allowed:
-            if self.redactor is not None and self.redactor.enabled:
+            if self._output_inspection_enabled():
                 with self._pending_lock:
                     self._pending_tool_calls[message.get("id")] = tool_name
             return line
@@ -130,8 +144,8 @@ class MCPProxy:
             self.stdout.flush()
 
     def _handle_server_line(self, line: str) -> str:
-        """Returns the line to forward to the client, redacted if needed."""
-        if self.redactor is None or not self.redactor.enabled:
+        """Returns the line to forward to the client, blocked/redacted as needed."""
+        if not self._output_inspection_enabled():
             return line
 
         stripped = line.rstrip("\n")
@@ -147,14 +161,42 @@ class MCPProxy:
         if tool_name is None or "result" not in message:
             return line
 
-        redacted_message, rule_names = self._redact_result(message)
-        if not rule_names:
+        blocked_message, injection_rules = self._check_injection(message)
+        if injection_rules:
+            self.audit.record_injection_block(tool_name, injection_rules)
+            return json.dumps(blocked_message) + "\n"
+
+        redacted_message, redaction_rules = self._redact_result(message)
+        if not redaction_rules:
             return line
 
-        self.audit.record_redaction(tool_name, rule_names)
+        self.audit.record_redaction(tool_name, redaction_rules)
         return json.dumps(redacted_message) + "\n"
 
-    def _redact_result(self, message: dict) -> tuple[dict, List[str]]:
+    def _check_injection(self, message: dict) -> Tuple[dict, List[str]]:
+        if self.injection_detector is None or not self.injection_detector.enabled:
+            return message, []
+
+        matched_rules: List[str] = []
+        for text in self._iter_text_content(message):
+            matched_rules.extend(self.injection_detector.scan(text))
+        if not matched_rules:
+            return message, []
+
+        matched_rules = sorted(set(matched_rules))
+        blocked_result = {
+            "content": [{
+                "type": "text",
+                "text": (
+                    "AgentGuard: this tool output was blocked — suspected prompt "
+                    f"injection (matched rules: {', '.join(matched_rules)})."
+                ),
+            }],
+            "isError": True,
+        }
+        return {**message, "result": blocked_result}, matched_rules
+
+    def _redact_result(self, message: dict) -> Tuple[dict, List[str]]:
         result = message.get("result") or {}
         content = result.get("content")
         if not isinstance(content, list):
@@ -172,3 +214,13 @@ class MCPProxy:
         if not all_rule_names:
             return message, []
         return {**message, "result": {**result, "content": new_content}}, all_rule_names
+
+    @staticmethod
+    def _iter_text_content(message: dict):
+        result = message.get("result") or {}
+        content = result.get("content")
+        if not isinstance(content, list):
+            return
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                yield item["text"]

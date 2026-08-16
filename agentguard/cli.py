@@ -9,6 +9,7 @@ from typing import List, Optional
 import yaml
 
 from .audit import AuditLog
+from .injection import InjectionDetector
 from .policy import PolicyEngine
 from .proxy import MCPProxy
 from .redact import SecretRedactor
@@ -47,8 +48,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     policy = PolicyEngine(raw_config)
     redactor = SecretRedactor.from_config(raw_config)
+    injection_detector = InjectionDetector.from_config(raw_config)
     audit = AuditLog(args.audit_log)
-    proxy = MCPProxy(server_cmd, policy, audit, redactor=redactor)
+    proxy = MCPProxy(server_cmd, policy, audit, redactor=redactor, injection_detector=injection_detector)
     return proxy.run()
 
 

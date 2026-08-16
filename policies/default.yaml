@@ -32,6 +32,10 @@ network:
     - "*.anthropic.com"
     - "pypi.org"
     - "*.pypi.org"
+    # example.com/*.example.com is reserved for documentation and
+    # testing (RFC 2606) — allowed here so demo/run_demo.sh's fetch_url
+    # scenario doesn't need a real, separately-allowlisted domain.
+    - "*.example.com"
   default_action: deny
 
 # Redaction runs on tool *output*, after a call has already been allowed
@@ -56,3 +60,27 @@ redaction:
       pattern: "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"
     - name: generic_api_key
       pattern: "(?i)(api[_-]?key|secret|token)[\"']?\\s*[:=]\\s*[\"'][A-Za-z0-9_\\-]{16,}[\"']"
+
+# Injection detection also runs on tool *output*, before redaction. It
+# looks for instruction-shaped text (the poisoned-webpage/poisoned-doc
+# attack: fetched content trying to redirect what the agent does next)
+# rather than secret formats. A hit blocks the whole tool result instead
+# of masking a span, since the injected instruction can't be safely left
+# next to real content. Omit `rules` to use agentguard.injection.DEFAULT_RULES.
+injection_detection:
+  enabled: true
+  rules:
+    - name: ignore_instructions
+      pattern: "ignore\\s+(all\\s+)?(previous|prior|above|earlier)\\s+instructions"
+    - name: disregard_instructions
+      pattern: "disregard\\s+(your|all|previous|prior)\\s+(instructions|rules|guidelines|prompt)"
+    - name: new_instructions_marker
+      pattern: "#{0,3}\\s*(new|updated|admin|system|override)\\s+instructions\\s*:"
+    - name: role_override
+      pattern: "you are now\\s+(a|an)\\b"
+    - name: reveal_system_prompt
+      pattern: "(reveal|print|show|output)\\s+(your\\s+)?(system prompt|full instructions|initial prompt)"
+    - name: exfiltrate_secret
+      pattern: "(send|post|email|upload|forward|exfiltrate|transmit)\\s+(the\\s+|the\\s+user'?s\\s+|your\\s+)?(ssh key|api key|password|credentials?|secrets?|tokens?|private key)s?\\s+to\\b"
+    - name: pipe_to_shell
+      pattern: "curl[^|\\n]*\\|\\s*(sudo\\s+)?(sh|bash)"
