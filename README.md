@@ -5,9 +5,9 @@ an MCP client (e.g. Claude Code) and an MCP server, and enforces a policy
 on every `tools/call` before it reaches the real server.
 
 Status: Week 1-4 build — the core interception layer, a v1 policy engine,
-output-side secret redaction, and output-side prompt-injection detection.
-Tamper-evident audit logging is planned for later and not implemented
-yet (see [What's not here yet](#whats-not-here-yet)).
+output-side secret redaction and prompt-injection detection, and a
+tamper-evident (hash-chained) audit log. See
+[What's not here yet](#whats-not-here-yet) for what's still missing.
 
 ## Architecture
 
@@ -47,7 +47,8 @@ before reaching the agent:
    shouldn't reach the agent's context unmasked.
 
 Every policy decision, redaction, and injection block is recorded in the
-audit log.
+audit log, which is itself hash-chained — see
+[Audit log integrity](#audit-log-integrity-v1).
 
 ## Policy engine (v1)
 
@@ -93,6 +94,28 @@ next to real text. Rule-based matching only for now — an optional LLM
 classification layer for phrasings the rules miss is planned but not
 built, see [What's not here yet](#whats-not-here-yet).
 
+## Audit log integrity (v1)
+
+Every entry AgentGuard writes carries `prev_hash` (the previous entry's
+sha256) and `hash` (sha256 of the entry's own fields plus `prev_hash`) —
+a hash chain, the same block-linking idea a blockchain uses, minus the
+consensus problem, since there's only ever one writer. Editing, deleting,
+or reordering any past entry breaks the link to everything after it.
+
+```bash
+agentguard verify-audit path/to/agentguard_audit.log
+```
+
+prints `OK: N entries verified, hash chain intact.` and exits 0, or
+`TAMPERED: <where and how>` and exits 1 on the first break it finds.
+
+This is tamper-*evidence*, not tamper-*proofing*: it makes silently
+editing an existing log detectable, but an attacker who can rewrite the
+whole file can recompute every hash and produce a self-consistent forged
+chain from scratch. Actual tamper-proofing would mean periodically
+publishing the chain's head hash somewhere outside the attacker's
+reach — out of scope for v1.
+
 ## Quickstart
 
 ```bash
@@ -130,6 +153,11 @@ returns two fixed, canned pages (no real network access) — and shows:
    but the response is blocked as a suspected prompt injection and
    logged — the agent never sees the payload.
 7. A clean page still fetches normally.
+8. `agentguard verify-audit` confirms the log's hash chain is intact.
+9. A past entry is edited directly in the file (e.g. flipping a denial
+   to an allow).
+10. Verifying again catches it immediately, naming the exact line and
+    what's wrong with it.
 
 ## Tests
 
@@ -139,12 +167,14 @@ pytest
 ```
 
 Covers the policy engine's allow/deny decisions per category, the
-redactor's and injection detector's pattern matching, and end-to-end
-proxy tests asserting: a blocked call never reaches the wrapped server
-and its secret never appears in the response; a normal call round-trips
-correctly; an allowed call's output gets a matched secret redacted and
-logged; a poisoned tool result is replaced entirely and logged, while a
-clean one passes through untouched.
+redactor's and injection detector's pattern matching, the audit log's
+hash chain (chaining across entries, surviving a process restart,
+detecting an edited entry / a deleted entry / a forged appended entry),
+and end-to-end proxy tests asserting: a blocked call never reaches the
+wrapped server and its secret never appears in the response; a normal
+call round-trips correctly; an allowed call's output gets a matched
+secret redacted and logged; a poisoned tool result is replaced entirely
+and logged, while a clean one passes through untouched.
 
 ## What's not here yet
 
@@ -152,7 +182,9 @@ Deliberately out of scope for this milestone, per the project plan:
 
 - LLM classification layer for injection attempts the regex rules miss
 - Entropy-based secret detection (current redaction is known-format regex only)
-- Tamper-evident (hash-chained) audit log — current log is plain
-  append-only JSONL
+- Tamper-*proofing* the audit log (publishing the chain head somewhere
+  outside local disk) — current hash-chaining only makes past edits to
+  the log file detectable, not impossible for someone with full
+  filesystem access to forge from scratch
 - Multi-agent/multi-transport support beyond MCP stdio
 - Any GUI
