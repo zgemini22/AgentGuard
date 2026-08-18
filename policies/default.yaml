@@ -73,7 +73,7 @@ injection_detection:
     - name: ignore_instructions
       pattern: "ignore\\s+(all\\s+)?(previous|prior|above|earlier)\\s+instructions"
     - name: disregard_instructions
-      pattern: "disregard\\s+(your|all|previous|prior)\\s+(instructions|rules|guidelines|prompt)"
+      pattern: "disregard\\s+((your|all|previous|prior)\\s+)+(instructions|rules|guidelines|prompt)"
     - name: new_instructions_marker
       pattern: "#{0,3}\\s*(new|updated|admin|system|override)\\s+instructions\\s*:"
     - name: role_override

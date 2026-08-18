@@ -7,18 +7,34 @@ on every `tools/call` before it reaches the real server.
 Status: Week 1-4 build — the core interception layer, a v1 policy engine,
 output-side secret redaction and prompt-injection detection, and a
 tamper-evident (hash-chained) audit log. See
-[What's not here yet](#whats-not-here-yet) for what's still missing.
+[What's not here yet](#whats-not-here-yet) for what's still missing, and
+[THREAT_MODEL.md](THREAT_MODEL.md) for what's protected, what isn't, and
+the assumptions the design rests on.
 
 ## Architecture
 
-```
-                       policy engine (YAML)   injection detector   secret redactor
-                             |                       |                    |
-                             v                       v                    v
-agent (MCP client) --stdio--> agentguard proxy <-----------------------------> real MCP server
-                                    |
-                                    v
-                              audit log (JSONL)
+```mermaid
+flowchart LR
+    Agent["Agent<br/>(MCP client)"]
+    Proxy["agentguard proxy"]
+    Server["Real MCP server"]
+    Policy["Policy engine<br/>(YAML)"]
+    Injection["Injection<br/>detector"]
+    Redact["Secret<br/>redactor"]
+    Audit["Audit log<br/>(hash-chained JSONL)"]
+
+    Agent -- "tools/call request" --> Proxy
+    Proxy -- "checked against" --> Policy
+    Policy -- "allowed" --> Server
+    Policy -. "denied: JSON-RPC error, never reaches server" .-> Agent
+    Server -- "tools/call result" --> Proxy
+    Proxy -- "scanned by" --> Injection
+    Injection -- "clean" --> Redact
+    Injection -. "hit: isError, blocked" .-> Agent
+    Redact -- "masked result" --> Agent
+    Policy --> Audit
+    Injection --> Audit
+    Redact --> Audit
 ```
 
 The proxy speaks the MCP stdio transport (newline-delimited JSON-RPC 2.0)
@@ -116,18 +132,42 @@ chain from scratch. Actual tamper-proofing would mean periodically
 publishing the chain's head hash somewhere outside the attacker's
 reach — out of scope for v1.
 
-## Quickstart
+## 5-minute quickstart
+
+**1. Install.**
 
 ```bash
 pip install -e .
+```
 
-# Wrap any MCP server with the proxy:
+**2. Point AgentGuard at whatever MCP server your agent already uses,**
+instead of pointing the agent at the server directly:
+
+```bash
 agentguard run --config policies/default.yaml -- python3 your_mcp_server.py
 ```
 
-The agent talks to the `agentguard` process exactly as it would to the
-wrapped server directly (same stdio transport) — only the policy checks
-are new.
+The agent talks to the `agentguard` process exactly as it would talk to
+the wrapped server (same stdio transport, same tool schema) — only the
+policy/redaction/injection checks are new. In your agent's MCP client
+config, this usually just means swapping the server's launch command for
+`agentguard run --config policies/default.yaml -- <original command>`.
+
+**3. Adjust the policy to your environment.** Start from
+`policies/default.yaml`, add deny patterns for anything else sensitive
+on your machine, and add your own domains to the network allowlist —
+the shipped default only allows a handful (GitHub, Anthropic, PyPI).
+
+**4. See it work before trusting it.** Run `./demo/run_demo.sh` (below)
+to watch the same policy engine block a real SSH-key read and a real
+poisoned-page injection in about 30 seconds, with the audit log to prove
+it.
+
+**5. Check the audit trail periodically:**
+
+```bash
+agentguard verify-audit agentguard_audit.log
+```
 
 ## Demo
 
@@ -188,3 +228,6 @@ Deliberately out of scope for this milestone, per the project plan:
   filesystem access to forge from scratch
 - Multi-agent/multi-transport support beyond MCP stdio
 - Any GUI
+
+Also not done yet, tracked separately from the code itself: a recorded
+attack/defense walkthrough, a PyPI release, and accompanying writeups.

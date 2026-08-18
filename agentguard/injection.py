@@ -43,7 +43,7 @@ class InjectionRule:
 
 DEFAULT_RULES: List[InjectionRule] = [
     InjectionRule("ignore_instructions", r"ignore\s+(all\s+)?(previous|prior|above|earlier)\s+instructions"),
-    InjectionRule("disregard_instructions", r"disregard\s+(your|all|previous|prior)\s+(instructions|rules|guidelines|prompt)"),
+    InjectionRule("disregard_instructions", r"disregard\s+((your|all|previous|prior)\s+)+(instructions|rules|guidelines|prompt)"),
     InjectionRule("new_instructions_marker", r"#{0,3}\s*(new|updated|admin|system|override)\s+instructions\s*:"),
     InjectionRule("role_override", r"you are now\s+(a|an)\b"),
     InjectionRule("reveal_system_prompt", r"(reveal|print|show|output)\s+(your\s+)?(system prompt|full instructions|initial prompt)"),
