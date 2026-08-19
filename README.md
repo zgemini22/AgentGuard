@@ -230,4 +230,7 @@ Deliberately out of scope for this milestone, per the project plan:
 - Any GUI
 
 Also not done yet, tracked separately from the code itself: a recorded
-attack/defense walkthrough, a PyPI release, and accompanying writeups.
+attack/defense walkthrough and a PyPI release, both of which need real
+credentials/interactive capture this environment doesn't have. Draft
+writeups exist in-repo at [`docs/blog/`](docs/blog/), ready to publish
+externally once picked up.

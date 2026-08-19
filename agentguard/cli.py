@@ -50,8 +50,13 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if not server_cmd:
         parser.error("missing MCP server command; usage: agentguard run --config <policy.yaml> -- <cmd...>")
 
-    with open(args.config, "r") as f:
-        raw_config = yaml.safe_load(f) or {}
+    try:
+        with open(args.config, "r") as f:
+            raw_config = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        parser.error(f"policy config file not found: {args.config}")
+    except yaml.YAMLError as e:
+        parser.error(f"failed to parse policy config {args.config}: {e}")
 
     policy = PolicyEngine(raw_config)
     redactor = SecretRedactor.from_config(raw_config)
