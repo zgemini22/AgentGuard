@@ -7,9 +7,12 @@ on every `tools/call` before it reaches the real server.
 Status: Week 1-4 build — the core interception layer, a v1 policy engine,
 output-side secret redaction and prompt-injection detection, and a
 tamper-evident (hash-chained) audit log. See
-[What's not here yet](#whats-not-here-yet) for what's still missing, and
+[What's not here yet](#whats-not-here-yet) for what's still missing,
 [THREAT_MODEL.md](THREAT_MODEL.md) for what's protected, what isn't, and
-the assumptions the design rests on.
+the assumptions the design rests on, and
+[docs/COMPARISON.md](docs/COMPARISON.md) for how this relates to garak,
+promptfoo, and the small existing ecosystem of MCP-specific runtime
+gateways it isn't the first of.
 
 ## Architecture
 
