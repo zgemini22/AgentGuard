@@ -1,0 +1,44 @@
+# Demo
+
+Two scripts, same underlying attack/defense scenarios, different
+purposes:
+
+- **`run_demo.sh`** — fast, no pacing, meant to actually run (locally,
+  in CI, to sanity-check a change). This is what the main README's
+  Demo section walks through.
+- **`record_demo.sh`** — the same scenarios with headers and pacing
+  added for a human watching a recording. This is what produced
+  `agentguard_demo.cast`.
+- **`vulnerable_server.py`** — the intentionally-unrestricted MCP-style
+  server both scripts wrap: a `read_file` tool with no path
+  restrictions, and a `fetch_url` tool returning two fixed, canned
+  pages (a poisoned one, a clean one) with no real network access.
+
+## Watching the recording
+
+`agentguard_demo.cast` is an [asciicast v2](https://docs.asciinema.org/manual/asciicast/v2/)
+recording — a plain-text, terminal-only capture (no video, no audio),
+~30 seconds, of `record_demo.sh` actually running against a real
+`agentguard` process. Play it back locally:
+
+```bash
+pip install asciinema
+asciinema play demo/agentguard_demo.cast
+```
+
+or drag the file onto [asciinema.org/a/new](https://asciinema.org/a/new) — or use `asciinema upload demo/agentguard_demo.cast`,
+which needs its own interactive login the first time — to get a
+shareable, embeddable link without installing anything to view it.
+
+## Re-recording after a change
+
+If the demo scenarios or their output change, re-record rather than
+hand-editing the `.cast` file (it's a timestamped event log, not
+something to patch by hand):
+
+```bash
+asciinema rec --command "bash demo/record_demo.sh" \
+  --cols 120 --rows 40 --idle-time-limit 2 \
+  --title "AgentGuard: minimal-privilege MCP proxy demo" \
+  --overwrite demo/agentguard_demo.cast
+```

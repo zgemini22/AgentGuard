@@ -202,6 +202,10 @@ returns two fixed, canned pages (no real network access) — and shows:
 10. Verifying again catches it immediately, naming the exact line and
     what's wrong with it.
 
+A recorded run of the same scenarios (paced, narrated, ~30s) is at
+[`demo/agentguard_demo.cast`](demo/agentguard_demo.cast) — see
+[`demo/README.md`](demo/README.md) for how to play it back.
+
 ## Tests
 
 ```bash
@@ -232,8 +236,11 @@ Deliberately out of scope for this milestone, per the project plan:
 - Multi-agent/multi-transport support beyond MCP stdio
 - Any GUI
 
-Also not done yet, tracked separately from the code itself: a recorded
-attack/defense walkthrough and a PyPI release, both of which need real
-credentials/interactive capture this environment doesn't have. Draft
-writeups exist in-repo at [`docs/blog/`](docs/blog/), ready to publish
-externally once picked up.
+Also not done yet, tracked separately from the code itself: a PyPI
+release, which needs real publishing credentials this environment
+doesn't have. A recorded attack/defense walkthrough exists at
+[`demo/agentguard_demo.cast`](demo/agentguard_demo.cast) — recording
+locally didn't need an account, only *uploading* it to asciinema.org
+for a shareable link does, so that upload is the one step left undone
+there. Draft writeups exist in-repo at [`docs/blog/`](docs/blog/),
+ready to publish externally once picked up.
