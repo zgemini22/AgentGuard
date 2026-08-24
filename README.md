@@ -4,9 +4,10 @@ A minimal-privilege proxy for AI agent tool calls. AgentGuard sits between
 an MCP client (e.g. Claude Code) and an MCP server, and enforces a policy
 on every `tools/call` before it reaches the real server.
 
-Status: Week 1-4 build — the core interception layer, a v1 policy engine,
-output-side secret redaction and prompt-injection detection, and a
-tamper-evident (hash-chained) audit log. See
+Status: Week 1-6 build, [published on PyPI](https://pypi.org/project/agentguard-mcp/) —
+the core interception layer, a v1 policy engine, output-side secret
+redaction and prompt-injection detection, and a tamper-evident
+(hash-chained) audit log. See
 [What's not here yet](#whats-not-here-yet) for what's still missing,
 [THREAT_MODEL.md](THREAT_MODEL.md) for what's protected, what isn't, and
 the assumptions the design rests on, and
@@ -137,7 +138,18 @@ reach — out of scope for v1.
 
 ## 5-minute quickstart
 
-**1. Install.**
+**1. Install.** Published on PyPI as
+[`agentguard-mcp`](https://pypi.org/project/agentguard-mcp/) — plain
+`agentguard` was already taken by an unrelated package, but the install
+name doesn't affect anything else: you still get the `agentguard`
+command and `import agentguard` either way.
+
+```bash
+pip install agentguard-mcp
+```
+
+Working on AgentGuard itself instead of just using it? Install from a
+local checkout in editable mode:
 
 ```bash
 pip install -e .
@@ -251,15 +263,8 @@ Deliberately out of scope for this milestone, per the project plan:
 - Multi-agent/multi-transport support beyond MCP stdio
 - Any GUI
 
-Also not done yet, tracked separately from the code itself: a PyPI
-release, which needs real publishing credentials this environment
-doesn't have. Note for whenever that happens: the distribution name is
-`agentguard-mcp` (plain `agentguard` is blocked by PyPI as too similar
-to an existing, unrelated package) — `pip install agentguard-mcp` will
-still give you the `agentguard` command and `import agentguard`
-unchanged, since a package's install name is independent of its
-console-script and import names. A recorded attack/defense walkthrough
-exists at
+Still not done, tracked separately from the code itself: a recorded
+attack/defense walkthrough exists at
 [`demo/agentguard_demo.cast`](demo/agentguard_demo.cast) — recording
 locally didn't need an account, only *uploading* it to asciinema.org
 for a shareable link does, so that upload is the one step left undone
