@@ -4,6 +4,14 @@ version = "0.1.0"
 description = "A minimal-privilege proxy for MCP tool calls"
 readme = "README.md"
 requires-python = ">=3.9"
+license = { text = "MIT" }
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+]
 dependencies = [
     "PyYAML>=6.0",
 ]
