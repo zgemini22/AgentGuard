@@ -1,5 +1,5 @@
 [project]
-name = "agentguard"
+name = "agentguard-mcp"
 version = "0.1.0"
 description = "A minimal-privilege proxy for MCP tool calls"
 readme = "README.md"

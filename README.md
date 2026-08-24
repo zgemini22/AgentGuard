@@ -253,7 +253,13 @@ Deliberately out of scope for this milestone, per the project plan:
 
 Also not done yet, tracked separately from the code itself: a PyPI
 release, which needs real publishing credentials this environment
-doesn't have. A recorded attack/defense walkthrough exists at
+doesn't have. Note for whenever that happens: the distribution name is
+`agentguard-mcp` (plain `agentguard` is blocked by PyPI as too similar
+to an existing, unrelated package) — `pip install agentguard-mcp` will
+still give you the `agentguard` command and `import agentguard`
+unchanged, since a package's install name is independent of its
+console-script and import names. A recorded attack/defense walkthrough
+exists at
 [`demo/agentguard_demo.cast`](demo/agentguard_demo.cast) — recording
 locally didn't need an account, only *uploading* it to asciinema.org
 for a shareable link does, so that upload is the one step left undone
