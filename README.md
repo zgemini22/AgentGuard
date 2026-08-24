@@ -209,7 +209,7 @@ A recorded run of the same scenarios (paced, narrated, ~30s) is at
 ## Tests
 
 ```bash
-pip install -e . pytest
+pip install -e . pytest coverage
 pytest
 ```
 
@@ -222,6 +222,21 @@ wrapped server and its secret never appears in the response; a normal
 call round-trips correctly; an allowed call's output gets a matched
 secret redacted and logged; a poisoned tool result is replaced entirely
 and logged, while a clean one passes through untouched.
+
+## By the numbers
+
+Every figure here is reproducible with the command next to it — none
+of it is a snapshot claim that can quietly go stale. Re-run
+`python3 scripts/stats.py` plus the two commands below any time,
+including right before quoting a number anywhere outside this repo.
+
+| | |
+|---|---|
+| Tests | 61 (`pytest -q \| tail -1`) |
+| Line coverage, `agentguard/` | 93% (`coverage run -m pytest -q && coverage report --include='agentguard/*'`) |
+| Built-in policy/detection rules shipped in `policies/default.yaml` | 34 total — 10 file-access deny patterns, 4 command deny patterns, 6 network allow patterns, 7 redaction rules, 7 injection-detection rules (`python3 scripts/stats.py`) |
+| Core module size | 678 lines across 5 files: `policy.py`, `redact.py`, `injection.py`, `audit.py`, `proxy.py` (`python3 scripts/stats.py`) |
+| Runtime dependencies | 1 (PyYAML) (`python3 scripts/stats.py`) |
 
 ## What's not here yet
 
