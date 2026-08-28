@@ -7,7 +7,6 @@ A minimal-privilege proxy for AI agent tool calls. AgentGuard sits between
 an MCP client (e.g. Claude Code) and an MCP server, and enforces a policy
 on every `tools/call` before it reaches the real server.
 
-
 ## Architecture
 
 ```mermaid
@@ -80,7 +79,7 @@ independent categories:
 
 Argument matching is by key name, not by a fixed tool allowlist, since
 MCP servers don't share one schema — this is a deliberate v1
-simplification, see [What's not here yet](#whats-not-here-yet).
+simplification.
 
 ## Secret redaction (v1)
 
@@ -105,7 +104,7 @@ agent's downstream reasoning wouldn't still be swayed by a
 redacted-but-still-present "ignore your instructions" sentence sitting
 next to real text. Rule-based matching only for now — an optional LLM
 classification layer for phrasings the rules miss is planned but not
-built, see [What's not here yet](#whats-not-here-yet).
+built.
 
 ## Audit log integrity (v1)
 
@@ -237,7 +236,7 @@ including right before quoting a number anywhere outside this repo.
 
 | | |
 |---|---|
-| Tests | 61 (`pytest -q \| tail -1`) |
+| Tests | 62 (`pytest -q \| tail -1`) |
 | Line coverage, `agentguard/` | 93% (`coverage run -m pytest -q && coverage report --include='agentguard/*'`) |
 | Built-in policy/detection rules shipped in `policies/default.yaml` | 34 total — 10 file-access deny patterns, 4 command deny patterns, 6 network allow patterns, 7 redaction rules, 7 injection-detection rules (`python3 scripts/stats.py`) |
 | Core module size | 678 lines across 5 files: `policy.py`, `redact.py`, `injection.py`, `audit.py`, `proxy.py` (`python3 scripts/stats.py`) |
