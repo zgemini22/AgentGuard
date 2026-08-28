@@ -206,9 +206,10 @@ returns two fixed, canned pages (no real network access) — and shows:
 10. Verifying again catches it immediately, naming the exact line and
     what's wrong with it.
 
-A recorded run of the same scenarios (paced, narrated, ~30s) is at
-[`demo/agentguard_demo.cast`](demo/agentguard_demo.cast) — see
-[`demo/README.md`](demo/README.md) for how to play it back.
+Watch a recorded run of the same scenarios (paced, narrated, ~30s):
+**[asciinema.org/a/cYpJRwcAOB9mTeSj](https://asciinema.org/a/cYpJRwcAOB9mTeSj)**
+— or play [`demo/agentguard_demo.cast`](demo/agentguard_demo.cast)
+locally, see [`demo/README.md`](demo/README.md).
 
 ## Tests
 

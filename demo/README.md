@@ -16,19 +16,18 @@ purposes:
 
 ## Watching the recording
 
-`agentguard_demo.cast` is an [asciicast v2](https://docs.asciinema.org/manual/asciicast/v2/)
-recording — a plain-text, terminal-only capture (no video, no audio),
-~30 seconds, of `record_demo.sh` actually running against a real
-`agentguard` process. Play it back locally:
+Watch it online, no install needed:
+**[asciinema.org/a/cYpJRwcAOB9mTeSj](https://asciinema.org/a/cYpJRwcAOB9mTeSj)**
+
+Or play the file in this repo locally — same recording, an
+[asciicast v2](https://docs.asciinema.org/manual/asciicast/v2/), a
+plain-text terminal-only capture (no video, no audio), ~30 seconds, of
+`record_demo.sh` actually running against a real `agentguard` process:
 
 ```bash
 pip install asciinema
 asciinema play demo/agentguard_demo.cast
 ```
-
-or drag the file onto [asciinema.org/a/new](https://asciinema.org/a/new) — or use `asciinema upload demo/agentguard_demo.cast`,
-which needs its own interactive login the first time — to get a
-shareable, embeddable link without installing anything to view it.
 
 ## Re-recording after a change
 
@@ -42,3 +41,7 @@ asciinema rec --command "bash demo/record_demo.sh" \
   --title "AgentGuard: minimal-privilege MCP proxy demo" \
   --overwrite demo/agentguard_demo.cast
 ```
+
+Then re-upload (`asciinema upload demo/agentguard_demo.cast`) — this
+mints a **new** URL rather than updating the existing one in place, so
+update the link above and in the main README's Demo section to match.
