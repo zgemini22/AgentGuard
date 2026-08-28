@@ -41,7 +41,3 @@ asciinema rec --command "bash demo/record_demo.sh" \
   --title "AgentGuard: minimal-privilege MCP proxy demo" \
   --overwrite demo/agentguard_demo.cast
 ```
-
-Then re-upload (`asciinema upload demo/agentguard_demo.cast`) — this
-mints a **new** URL rather than updating the existing one in place, so
-update the link above and in the main README's Demo section to match.
