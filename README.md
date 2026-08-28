@@ -241,3 +241,13 @@ including right before quoting a number anywhere outside this repo.
 | Built-in policy/detection rules shipped in `policies/default.yaml` | 34 total — 10 file-access deny patterns, 4 command deny patterns, 6 network allow patterns, 7 redaction rules, 7 injection-detection rules (`python3 scripts/stats.py`) |
 | Core module size | 678 lines across 5 files: `policy.py`, `redact.py`, `injection.py`, `audit.py`, `proxy.py` (`python3 scripts/stats.py`) |
 | Runtime dependencies | 1 (PyYAML) (`python3 scripts/stats.py`) |
+
+## Further reading
+
+- [`THREAT_MODEL.md`](THREAT_MODEL.md) — what's protected, what isn't,
+  and the assumptions the design rests on.
+- [`docs/COMPARISON.md`](docs/COMPARISON.md) — how this relates to
+  garak, promptfoo, and the existing ecosystem of MCP-specific runtime
+  gateways.
+- [`docs/blog/`](docs/blog/) — write-ups on the design decisions and
+  the injection detector's false-positive/false-negative tradeoffs.
