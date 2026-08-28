@@ -242,24 +242,3 @@ including right before quoting a number anywhere outside this repo.
 | Built-in policy/detection rules shipped in `policies/default.yaml` | 34 total — 10 file-access deny patterns, 4 command deny patterns, 6 network allow patterns, 7 redaction rules, 7 injection-detection rules (`python3 scripts/stats.py`) |
 | Core module size | 678 lines across 5 files: `policy.py`, `redact.py`, `injection.py`, `audit.py`, `proxy.py` (`python3 scripts/stats.py`) |
 | Runtime dependencies | 1 (PyYAML) (`python3 scripts/stats.py`) |
-
-## What's not here yet
-
-Deliberately out of scope for this milestone, per the project plan:
-
-- LLM classification layer for injection attempts the regex rules miss
-- Entropy-based secret detection (current redaction is known-format regex only)
-- Tamper-*proofing* the audit log (publishing the chain head somewhere
-  outside local disk) — current hash-chaining only makes past edits to
-  the log file detectable, not impossible for someone with full
-  filesystem access to forge from scratch
-- Multi-agent/multi-transport support beyond MCP stdio
-- Any GUI
-
-Still not done, tracked separately from the code itself: a recorded
-attack/defense walkthrough exists at
-[`demo/agentguard_demo.cast`](demo/agentguard_demo.cast) — recording
-locally didn't need an account, only *uploading* it to asciinema.org
-for a shareable link does, so that upload is the one step left undone
-there. Draft writeups exist in-repo at [`docs/blog/`](docs/blog/),
-ready to publish externally once picked up.
