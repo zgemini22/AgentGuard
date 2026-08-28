@@ -1,5 +1,8 @@
 # AgentGuard
 
+[![CI](https://github.com/zgemini22/AgentGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/zgemini22/AgentGuard/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/agentguard-mcp.svg)](https://pypi.org/project/agentguard-mcp/)
+
 A minimal-privilege proxy for AI agent tool calls. AgentGuard sits between
 an MCP client (e.g. Claude Code) and an MCP server, and enforces a policy
 on every `tools/call` before it reaches the real server.
