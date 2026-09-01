@@ -6,7 +6,9 @@ PolicyEngine before it is allowed to reach the wrapped server. Denied
 calls never leave the proxy — the agent gets a JSON-RPC error back
 immediately, and the real server never sees the request. Every other
 message (initialize, tools/list, notifications, ...) is passed through
-untouched in both directions.
+untouched in both directions — but a `tools/list` *response* is also
+read on the way past, so the policy engine's argument classifier knows
+each tool's declared input schema before the first call arrives.
 
 Responses are also inspected, in two passes, for a `tools/call` result
 the policy already allowed through:
@@ -26,6 +28,7 @@ import json
 import subprocess
 import sys
 import threading
+import time
 from typing import IO, Dict, List, Optional, Tuple
 
 from .audit import AuditLog
@@ -34,6 +37,9 @@ from .policy import PolicyEngine
 from .redact import SecretRedactor
 
 POLICY_VIOLATION_ERROR_CODE = -32001
+# How long a tools/call waits for an in-flight tools/list response before
+# being evaluated with whatever schemas are known so far.
+SCHEMA_WAIT_SECONDS = 5.0
 
 
 class MCPProxy:
@@ -60,7 +66,14 @@ class MCPProxy:
         # policy allowed through to the real server. Written by the
         # client->server thread, read/popped by the server->client thread.
         self._pending_tool_calls: Dict[object, str] = {}
+        # Request ids of in-flight `tools/list` calls, so the matching
+        # response can be recognized and its schemas registered. A
+        # `tools/call` that arrives while one is in flight waits for it
+        # (bounded by SCHEMA_WAIT_SECONDS), so a pipelining client can't
+        # slip a call past the policy before its schema is known.
+        self._pending_tools_list: set = set()
         self._pending_lock = threading.Lock()
+        self._schema_ready = threading.Condition(self._pending_lock)
 
     def _output_inspection_enabled(self) -> bool:
         return (self.redactor is not None and self.redactor.enabled) or (
@@ -107,13 +120,19 @@ class MCPProxy:
         except json.JSONDecodeError:
             return line
 
-        if message.get("method") != "tools/call":
+        method = message.get("method")
+        if method == "tools/list" and message.get("id") is not None:
+            with self._pending_lock:
+                self._pending_tools_list.add(message.get("id"))
+            return line
+        if method != "tools/call":
             return line
 
         params = message.get("params") or {}
         tool_name = params.get("name", "<unknown>")
         arguments = params.get("arguments") or {}
 
+        self._wait_for_pending_tools_list()
         decision = self.policy.evaluate(tool_name, arguments)
         self.audit.record(tool_name, arguments, decision)
 
@@ -125,6 +144,15 @@ class MCPProxy:
 
         self._reject(message.get("id"), decision.reason)
         return None
+
+    def _wait_for_pending_tools_list(self) -> None:
+        deadline = time.monotonic() + SCHEMA_WAIT_SECONDS
+        with self._schema_ready:
+            while self._pending_tools_list:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._schema_ready.wait(remaining)
 
     def _reject(self, request_id, reason: str) -> None:
         error_response = {
@@ -145,9 +173,6 @@ class MCPProxy:
 
     def _handle_server_line(self, line: str) -> str:
         """Returns the line to forward to the client, blocked/redacted as needed."""
-        if not self._output_inspection_enabled():
-            return line
-
         stripped = line.rstrip("\n")
         if not stripped:
             return line
@@ -156,8 +181,23 @@ class MCPProxy:
         except json.JSONDecodeError:
             return line
 
+        message_id = message.get("id")
+        with self._schema_ready:
+            is_tools_list = message_id in self._pending_tools_list
+            if is_tools_list:
+                result = message.get("result")
+                if isinstance(result, dict):
+                    self.policy.classifier.register_tools(result.get("tools"))
+                self._pending_tools_list.discard(message_id)
+                self._schema_ready.notify_all()
+        if is_tools_list:
+            return line
+
+        if not self._output_inspection_enabled():
+            return line
+
         with self._pending_lock:
-            tool_name = self._pending_tool_calls.pop(message.get("id"), None)
+            tool_name = self._pending_tool_calls.pop(message_id, None)
         if tool_name is None or "result" not in message:
             return line
 

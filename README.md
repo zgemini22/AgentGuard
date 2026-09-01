@@ -77,9 +77,16 @@ independent categories:
   arguments (`url`, `uri`, `host`, `domain`); anything not on the list is
   denied when `default_action: deny`.
 
-Argument matching is by key name, not by a fixed tool allowlist, since
-MCP servers don't share one schema — this is a deliberate v1
-simplification.
+Which category an argument falls into is decided per tool from the
+`inputSchema` the server declares in its `tools/list` response (an
+explicit `format: uri`, the property's description), falling back to
+key-name conventions (`path`, `url`, `command`, ...) and their tokens
+(`file_location`, `targetHost`) for servers with lazy schemas. The
+proxy reads the `tools/list` response on its way past — it isn't
+modified — and holds any `tools/call` that arrives while a `tools/list`
+is still in flight, so a pipelining client can't get a call evaluated
+before its schema is known. Lists and nested objects are walked, so
+`paths: [...]` is checked element by element.
 
 ## Secret redaction (v1)
 

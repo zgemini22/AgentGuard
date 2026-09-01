@@ -11,6 +11,7 @@ from agentguard.proxy import MCPProxy
 from agentguard.redact import SecretRedactor
 
 DEMO_SERVER = os.path.join(os.path.dirname(__file__), "..", "demo", "vulnerable_server.py")
+SCHEMA_ONLY_SERVER = os.path.join(os.path.dirname(__file__), "schema_only_server.py")
 
 CONFIG = {
     "file_access": {
@@ -20,13 +21,13 @@ CONFIG = {
 }
 
 
-def run_proxy(requests, config=CONFIG):
+def run_proxy(requests, config=CONFIG, server=DEMO_SERVER):
     with tempfile.TemporaryDirectory() as tmp:
         audit_path = os.path.join(tmp, "audit.log")
         stdin = io.StringIO("\n".join(json.dumps(r) for r in requests) + "\n")
         stdout = io.StringIO()
         proxy = MCPProxy(
-            [sys.executable, DEMO_SERVER],
+            [sys.executable, server],
             PolicyEngine(config),
             AuditLog(audit_path),
             redactor=SecretRedactor.from_config(config),
@@ -176,3 +177,52 @@ def test_clean_fetched_page_passes_through_unblocked():
     assert "isError" not in call_response["result"]
     assert "Project README" in call_response["result"]["content"][0]["text"]
     assert not [e for e in audit_entries if e.get("event") == "injection_blocked"]
+
+
+def test_tools_list_schema_is_captured_and_used_to_classify_argument(tmp_path):
+    key_path = tmp_path / ".ssh" / "id_rsa"
+    key_path.parent.mkdir()
+    key_path.write_text("SUPER-SECRET-KEY")
+
+    # open_thing's argument is `where` — nothing about the name says
+    # "path"; only the schema's description does. So the call is caught
+    # exactly when the proxy has seen the tools/list response first.
+    call = {
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "open_thing", "arguments": {"where": str(key_path)}},
+    }
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    tools_list = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+
+    responses, audit_entries = run_proxy([init, tools_list, call], server=SCHEMA_ONLY_SERVER)
+    call_response = next(r for r in responses if r.get("id") == 3)
+    assert "error" in call_response
+    assert "SUPER-SECRET-KEY" not in json.dumps(call_response)
+    denied = [e for e in audit_entries if e["tool"] == "open_thing"]
+    assert denied[0]["allowed"] is False
+    assert denied[0]["argument_categories"] == {"where": "file_access"}
+    # tools/list itself still passes through to the client untouched.
+    assert next(r for r in responses if r.get("id") == 2)["result"]["tools"][0]["name"] == "open_thing"
+
+    responses, audit_entries = run_proxy([init, call], server=SCHEMA_ONLY_SERVER)
+    call_response = next(r for r in responses if r.get("id") == 3)
+    assert call_response["result"]["content"][0]["text"] == "SUPER-SECRET-KEY"  # the v1 gap, still open without a schema
+    allowed = [e for e in audit_entries if e["tool"] == "open_thing"]
+    assert allowed[0]["argument_categories"] == {"where": "unclassified"}
+
+
+def test_demo_read_document_renamed_argument_is_caught_by_key_token(tmp_path):
+    key_path = tmp_path / ".ssh" / "id_rsa"
+    key_path.parent.mkdir()
+    key_path.write_text("SUPER-SECRET-KEY")
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "read_document", "arguments": {"file_location": str(key_path)}},
+        },
+    ]
+    responses, _ = run_proxy(requests)
+    call_response = next(r for r in responses if r.get("id") == 2)
+    assert "error" in call_response
+    assert "SUPER-SECRET-KEY" not in json.dumps(call_response)

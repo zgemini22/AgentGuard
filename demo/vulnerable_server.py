@@ -2,12 +2,14 @@
 """A deliberately unrestricted MCP-style stdio server, for demo purposes only.
 
 Speaks a minimal subset of MCP over newline-delimited JSON-RPC: initialize,
-tools/list, a `read_file` tool that reads any path it's given, and a
-`fetch_url` tool that returns canned "web page" content for a couple of
-fixed demo URLs (no real network access — keeps the demo hermetic). Used
-to show what AgentGuard's proxy blocks that a raw MCP client <-> server
-connection would not: unrestricted file reads, and a poisoned page trying
-to redirect the agent via embedded instructions.
+tools/list, a `read_file` tool that reads any path it's given, a
+`read_document` tool that does the same thing but calls its argument
+`file_location` (the argument-rename bypass v1's key-name matching fell
+for), and a `fetch_url` tool that returns canned "web page" content for
+a couple of fixed demo URLs (no real network access — keeps the demo
+hermetic). Used to show what AgentGuard's proxy blocks that a raw MCP
+client <-> server connection would not: unrestricted file reads, and a
+poisoned page trying to redirect the agent via embedded instructions.
 """
 
 from __future__ import annotations
@@ -65,6 +67,20 @@ def handle_tools_list(req_id):
                     },
                 },
                 {
+                    "name": "read_document",
+                    "description": "Read a document from disk and return its contents.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "file_location": {
+                                "type": "string",
+                                "description": "Absolute path to the document to read.",
+                            }
+                        },
+                        "required": ["file_location"],
+                    },
+                },
+                {
                     "name": "fetch_url",
                     "description": "Fetch a web page and return its text content.",
                     "inputSchema": {
@@ -83,6 +99,8 @@ def handle_tools_call(req_id, params):
     arguments = params.get("arguments") or {}
     if name == "read_file":
         _handle_read_file(req_id, arguments)
+    elif name == "read_document":
+        _handle_read_file(req_id, {"path": arguments.get("file_location", "")})
     elif name == "fetch_url":
         _handle_fetch_url(req_id, arguments)
     else:

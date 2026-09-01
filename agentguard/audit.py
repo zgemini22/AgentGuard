@@ -117,6 +117,10 @@ class AuditLog:
             "event": "policy_decision",
             "tool": tool_name,
             "arguments": arguments,
+            # Which category each string argument was classified into
+            # ("unclassified" if none) — i.e. what the policy actually
+            # looked at, not just what it concluded.
+            "argument_categories": decision.argument_categories,
             "allowed": decision.allowed,
             "category": decision.category,
             "reason": decision.reason,

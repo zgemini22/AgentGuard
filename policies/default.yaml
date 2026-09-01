@@ -1,6 +1,8 @@
-# AgentGuard v1 policy: file / command / network rules.
-# Patterns are matched against tool-call arguments by key name
-# (see PATH_ARG_KEYS / COMMAND_ARG_KEYS / URL_ARG_KEYS in agentguard/policy.py).
+# AgentGuard policy: file / command / network rules.
+# Patterns are matched against tool-call arguments. Which category an
+# argument belongs to comes from the tool's declared inputSchema (seen
+# on tools/list) when there is one, and from key-name conventions
+# otherwise — see agentguard/classify.py.
 
 file_access:
   enabled: true
