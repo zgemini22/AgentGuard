@@ -27,8 +27,18 @@ def load_default_config() -> dict:
 def test_default_yaml_parses_and_has_expected_top_level_sections():
     config = load_default_config()
     assert set(config.keys()) == {
-        "file_access", "command_exec", "network", "redaction", "injection_detection",
+        "unclassified_arguments", "file_access", "command_exec", "network",
+        "redaction", "injection_detection",
     }
+
+
+def test_default_policy_ships_with_unclassified_allow_and_documents_deny():
+    # The shipped default stays backward compatible; the secure setting
+    # is opt-in. If this changes, the README's policy section must too.
+    config = load_default_config()
+    assert config["unclassified_arguments"] == "allow"
+    with open(DEFAULT_POLICY_PATH) as f:
+        assert "the secure setting" in f.read()
 
 
 def test_default_policy_blocks_ssh_key_and_dotenv():

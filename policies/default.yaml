@@ -4,6 +4,17 @@
 # on tools/list) when there is one, and from key-name conventions
 # otherwise — see agentguard/classify.py.
 
+# What to do with a string argument the classifier can't place in any
+# category. `allow` (the default, and the v1 behavior) lets it through
+# unchecked — which is exactly the rename-the-argument bypass. `deny` is
+# the secure setting: a call is rejected if any string argument is
+# unclassified. It's only livable once your server's schemas are good
+# enough that everything you care about classifies; run
+#   agentguard check-policy --probe <tool> '<json-args>'
+# against real calls before flipping it. Either way, the audit entry
+# records the category as "unclassified" so the gap is visible.
+unclassified_arguments: allow
+
 file_access:
   enabled: true
   deny_patterns:

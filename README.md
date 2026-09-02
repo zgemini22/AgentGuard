@@ -88,6 +88,15 @@ is still in flight, so a pipelining client can't get a call evaluated
 before its schema is known. Lists and nested objects are walked, so
 `paths: [...]` is checked element by element.
 
+An argument nothing recognizes is *unclassified*. The top-level
+`unclassified_arguments` key decides what happens then: `allow` (the
+default, for compatibility) lets the call through and records the
+category as `unclassified` in the audit log so the gap is visible;
+`deny` is the secure setting — the call is rejected if any string
+argument is unclassified, which closes the rename-the-argument bypass
+outright. Flip it once `agentguard check-policy --probe` shows your
+server's real calls classify cleanly.
+
 ## Secret redaction (v1)
 
 A separate `redaction` section in the same YAML config (see

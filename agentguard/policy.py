@@ -31,6 +31,14 @@ from .classify import (  # noqa: F401  (re-exported for backward compatibility)
     ArgumentClassifier,
 )
 
+# Decision.category for a call whose string arguments matched no
+# classifier rule at all. Distinct from "none" (no string arguments to
+# classify) because they mean different things to a reader of the log:
+# "none" is inert, "unclassified" is a gap the policy couldn't see into.
+UNCLASSIFIED = "unclassified"
+UNCLASSIFIED_ALLOW = "allow"
+UNCLASSIFIED_DENY = "deny"
+
 
 @dataclass
 class ClassifiedArgument:
@@ -95,6 +103,13 @@ class PolicyEngine:
         self._file_rule = self._load_category(config.get("file_access", {}))
         self._command_rule = self._load_category(config.get("command_exec", {}))
         self._network_rule = self._load_category(config.get("network", {}))
+        # What to do with a string argument no classifier rule recognized.
+        # `allow` is the v1 behavior and the default for compatibility;
+        # `deny` is the secure setting — it closes the rename-the-argument
+        # bypass entirely, at the cost of rejecting calls to tools whose
+        # schemas the classifier can't read. Check with
+        # `agentguard check-policy --probe` before flipping it.
+        self.unclassified_arguments = config.get("unclassified_arguments", UNCLASSIFIED_ALLOW)
         # Shared with the proxy, which feeds it `tools/list` schemas as
         # they go by. Without any registered schema it classifies by key
         # name alone, which is the v1 behavior.
@@ -139,8 +154,11 @@ class PolicyEngine:
     def evaluate(self, tool_name: str, arguments: dict) -> Decision:
         classified = self.classify_arguments(tool_name, arguments)
         checked_categories: List[str] = []
+        unclassified_keys: List[str] = []
         for arg in classified:
             if arg.category is None:
+                if arg.key not in unclassified_keys:
+                    unclassified_keys.append(arg.key)
                 continue
             rule = self._rule_for(arg.category)
             if not rule.enabled:
@@ -151,6 +169,14 @@ class PolicyEngine:
             if decision is not None:
                 decision.arguments = classified
                 return decision
+
+        if unclassified_keys and self.unclassified_arguments == UNCLASSIFIED_DENY:
+            return Decision(
+                False, UNCLASSIFIED,
+                f"tool '{tool_name}' argument(s) {', '.join(repr(k) for k in unclassified_keys)} "
+                "could not be classified and unclassified_arguments is 'deny'",
+                arguments=classified,
+            )
         if checked_categories:
             return Decision(
                 allowed=True,
@@ -158,10 +184,18 @@ class PolicyEngine:
                 reason=f"tool '{tool_name}' call checked against {', '.join(checked_categories)}; no deny rule matched",
                 arguments=classified,
             )
+        if unclassified_keys:
+            return Decision(
+                allowed=True,
+                category=UNCLASSIFIED,
+                reason=f"tool '{tool_name}' argument(s) {', '.join(repr(k) for k in unclassified_keys)} "
+                       "matched no policy category; allowed because unclassified_arguments is 'allow'",
+                arguments=classified,
+            )
         return Decision(
             allowed=True,
             category="none",
-            reason=f"tool '{tool_name}' call has no arguments matching a configured policy category",
+            reason=f"tool '{tool_name}' call has no string arguments for the policy to classify",
             arguments=classified,
         )
 

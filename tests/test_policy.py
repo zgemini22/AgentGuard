@@ -78,11 +78,48 @@ def test_allows_url_in_allowlist():
     assert decision.allowed is True
 
 
-def test_allows_call_with_no_recognized_argument_keys():
+def test_allows_call_with_no_recognized_argument_keys_by_default():
     engine = make_engine()
     decision = engine.evaluate("list_things", {"count": "10"})
     assert decision.allowed is True
+    assert decision.category == "unclassified"
+    assert "unclassified_arguments is 'allow'" in decision.reason
+
+
+def test_call_with_no_string_arguments_is_category_none():
+    engine = make_engine()
+    decision = engine.evaluate("list_things", {"count": 10, "verbose": True})
+    assert decision.allowed is True
     assert decision.category == "none"
+
+
+def test_unclassified_arguments_deny_fails_closed():
+    engine = PolicyEngine({**DEFAULT_CONFIG, "unclassified_arguments": "deny"})
+    decision = engine.evaluate("read_thing", {"where": "/home/u/.ssh/id_rsa"})
+    assert decision.allowed is False
+    assert decision.category == "unclassified"
+    assert "'where'" in decision.reason
+    assert decision.argument_categories == {"where": "unclassified"}
+
+
+def test_unclassified_arguments_deny_still_allows_fully_classified_calls():
+    engine = PolicyEngine({**DEFAULT_CONFIG, "unclassified_arguments": "deny"})
+    assert engine.evaluate("read_file", {"path": "/tmp/notes.txt"}).allowed is True
+    assert engine.evaluate("list_things", {"count": 10}).allowed is True  # nothing to classify
+
+
+def test_unclassified_arguments_deny_lets_a_matching_deny_rule_win_first():
+    engine = PolicyEngine({**DEFAULT_CONFIG, "unclassified_arguments": "deny"})
+    decision = engine.evaluate("read_file", {"path": "~/.ssh/id_rsa", "mystery": "x"})
+    assert decision.allowed is False
+    assert decision.category == "file_access"  # the concrete rule, not the generic fail-closed
+
+
+def test_unclassified_arguments_deny_reports_every_unclassified_key():
+    engine = PolicyEngine({"unclassified_arguments": "deny"})
+    decision = engine.evaluate("t", {"a": "1", "b": "2", "path": "/ok"})
+    assert decision.allowed is False
+    assert "'a', 'b'" in decision.reason
 
 
 def test_disabled_category_is_skipped():
