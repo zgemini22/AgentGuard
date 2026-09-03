@@ -7,9 +7,11 @@ fetch a URL and still return something that shouldn't land in the
 agent's context verbatim (a checked-in .env dump, a token embedded in an
 API response, ...) — redaction is the second layer for that case.
 
-v1 scope: known secret *formats* via regex (AWS/GitHub/Slack key
-prefixes, PEM private key blocks, JWTs, a generic key=value pattern).
-No entropy-based detection — that's a probabilistic guess and produces
+Known secret *formats* via regex (AWS/GitHub/Slack key prefixes, PEM
+private key blocks, JWTs, a generic key=value pattern), matched
+against the normalized text (agentguard.normalize) so a key split by
+zero-width characters or hidden in a base64 blob is still caught. No
+entropy-based detection — that's a probabilistic guess and produces
 too many false positives/negatives to be worth it before there's real
 usage data to tune against.
 """
@@ -19,6 +21,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import List, Tuple
+
+from .normalize import normalize
 
 
 @dataclass
@@ -60,15 +64,43 @@ class SecretRedactor:
     def redact(self, text: str) -> Tuple[str, List[str]]:
         """Returns (redacted_text, rule_names_matched). Never returns the
         matched secret value itself, including to the caller — only which
-        rule fired, so audit logs stay safe to store and share."""
+        rule fired, so audit logs stay safe to store and share.
+
+        Rules are matched against the *normalized* text (and any base64
+        payload recovered from it), but the edit is made to the
+        *original*: each normalized match is mapped back to the span it
+        came from, and a match inside a decoded base64 run replaces the
+        whole run. Rules are applied in order and a later rule can't
+        match inside a span an earlier one already claimed — the same
+        first-rule-wins semantics as sequential substitution had."""
         if not self.enabled or not text:
             return text, []
 
-        matched_rules: List[str] = []
-        for rule in self.rules:
-            def _replace(match: re.Match, rule_name: str = rule.name) -> str:
-                matched_rules.append(rule_name)
-                return f"[REDACTED:{rule_name}]"
+        nt = normalize(text)
+        claimed: List[Tuple[int, int, str]] = []  # (orig_start, orig_end, rule_name)
 
-            text = rule.compiled.sub(_replace, text)
-        return text, matched_rules
+        def _free(start: int, end: int) -> bool:
+            return all(end <= s or start >= e for s, e, _ in claimed)
+
+        for rule in self.rules:
+            for target, run in nt.scan_targets():
+                if run is None:
+                    for match in rule.compiled.finditer(target):
+                        start, end = nt.map_span(match.start(), match.end())
+                        if end > start and _free(start, end):
+                            claimed.append((start, end, rule.name))
+                elif rule.compiled.search(target) and _free(run.start, run.end):
+                    claimed.append((run.start, run.end, rule.name))
+
+        if not claimed:
+            return text, []
+
+        matched_rules = [name for _, _, name in claimed]
+        pieces: List[str] = []
+        cursor = 0
+        for start, end, name in sorted(claimed):
+            pieces.append(text[cursor:start])
+            pieces.append(f"[REDACTED:{name}]")
+            cursor = end
+        pieces.append(text[cursor:])
+        return "".join(pieces), matched_rules

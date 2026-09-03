@@ -10,11 +10,13 @@ call *input*) and SecretRedactor (masks known secret *formats* in
 output): this one looks for instruction-shaped *text* in output,
 regardless of whether it contains a secret.
 
-v1 scope: rule-based pattern matching only. An optional LLM
-classification layer for content that doesn't match a known pattern is
-planned but not implemented — rules alone will always miss novel
-phrasings, which is a real limitation worth stating rather than
-quietly living with.
+Rule-based pattern matching only. An optional LLM classification
+layer for content that doesn't match a known pattern is planned but
+not implemented — rules alone will always miss novel phrasings, which
+is a real limitation worth stating rather than quietly living with.
+What the rules *do* see is the normalized text (agentguard.normalize):
+zero-width characters stripped, homoglyphs folded, NFKC applied,
+base64 payloads decoded — so the cheap encoding tricks don't work.
 
 Unlike redaction (which masks the specific matched span and lets the
 rest of the output through), a detected injection blocks the *entire*
@@ -29,6 +31,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import List
+
+from .normalize import normalize
 
 
 @dataclass
@@ -72,8 +76,14 @@ class InjectionDetector:
         return cls(rules, enabled)
 
     def scan(self, text: str) -> List[str]:
-        """Returns the names of every rule that matched. Does not mutate
-        or truncate the text — callers decide what to do with a hit."""
+        """Returns the names of every rule that matched, against the
+        normalized form of `text` (see agentguard.normalize) and against
+        any base64 payload recovered from it. Does not mutate or
+        truncate the text — callers decide what to do with a hit."""
         if not self.enabled or not text:
             return []
-        return [rule.name for rule in self.rules if rule.compiled.search(text)]
+        targets = [t for t, _ in normalize(text).scan_targets()]
+        return [
+            rule.name for rule in self.rules
+            if any(rule.compiled.search(t) for t in targets)
+        ]
