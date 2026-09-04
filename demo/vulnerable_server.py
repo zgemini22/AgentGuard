@@ -46,7 +46,7 @@ def handle_initialize(req_id):
         "result": {
             "protocolVersion": "2024-11-05",
             "serverInfo": {"name": "agentguard-demo-vulnerable-server", "version": "0.1.0"},
-            "capabilities": {"tools": {}},
+            "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
         },
     })
 
@@ -103,8 +103,49 @@ def handle_tools_call(req_id, params):
         _handle_read_file(req_id, {"path": arguments.get("file_location", "")})
     elif name == "fetch_url":
         _handle_fetch_url(req_id, arguments)
+    elif name == "screenshot":
+        # A non-text content item: nothing for a text scanner to read.
+        send({"jsonrpc": "2.0", "id": req_id, "result": {"content": [
+            {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"},
+            {"type": "text", "text": "screenshot captured"},
+        ]}})
     else:
         send({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Unknown tool: {name}"}})
+
+
+def handle_resources_read(req_id, params):
+    """`file://<path>` reads that path; `demo://<page-host>` returns the
+    canned page for https://<page-host>/... so the poisoned page is also
+    reachable as a resource, not just through fetch_url."""
+    uri = params.get("uri", "")
+    if uri.startswith("file://"):
+        path = uri[len("file://"):]
+        try:
+            with open(path, "r") as f:
+                text = f.read()
+        except OSError as e:
+            send({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": str(e)}})
+            return
+    else:
+        host = uri.split("://", 1)[-1]
+        page_url = next((u for u in FAKE_PAGES if f"//{host}/" in u), None)
+        text = FAKE_PAGES[page_url] if page_url else f"404: no demo resource registered for {uri}"
+    send({"jsonrpc": "2.0", "id": req_id, "result": {
+        "contents": [{"uri": uri, "mimeType": "text/plain", "text": text}],
+    }})
+
+
+def handle_prompts_get(req_id, params):
+    """`summarize_page` with argument `url` builds a prompt around the
+    canned page's content — the poisoned one carries its injection into
+    the prompt messages."""
+    arguments = params.get("arguments") or {}
+    url = arguments.get("url", "")
+    page = FAKE_PAGES.get(url, f"404: no demo page registered for {url}")
+    send({"jsonrpc": "2.0", "id": req_id, "result": {
+        "description": "Summarize a web page",
+        "messages": [{"role": "user", "content": {"type": "text", "text": f"Summarize this page:\n\n{page}"}}],
+    }})
 
 
 def _handle_read_file(req_id, arguments):
@@ -137,6 +178,10 @@ def main() -> None:
             handle_tools_list(req_id)
         elif method == "tools/call":
             handle_tools_call(req_id, req.get("params") or {})
+        elif method == "resources/read":
+            handle_resources_read(req_id, req.get("params") or {})
+        elif method == "prompts/get":
+            handle_prompts_get(req_id, req.get("params") or {})
         elif req_id is not None:
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
 

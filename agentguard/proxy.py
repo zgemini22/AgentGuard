@@ -2,33 +2,45 @@
 
 The MCP stdio transport is newline-delimited JSON-RPC 2.0. Every message
 the agent sends is inspected; a `tools/call` request is evaluated by the
-PolicyEngine before it is allowed to reach the wrapped server. Denied
-calls never leave the proxy — the agent gets a JSON-RPC error back
-immediately, and the real server never sees the request. Every other
-message (initialize, tools/list, notifications, ...) is passed through
-untouched in both directions — but a `tools/list` *response* is also
-read on the way past, so the policy engine's argument classifier knows
-each tool's declared input schema before the first call arrives.
+PolicyEngine before it is allowed to reach the wrapped server, and so is
+a `resources/read` (its `uri` goes through the same network/file rules —
+a `file://` URI is a file read). Denied calls never leave the proxy —
+the agent gets a JSON-RPC error back immediately, and the real server
+never sees the request. Every other message (initialize, tools/list,
+notifications, ...) is passed through untouched in both directions —
+but a `tools/list` *response* is also read on the way past, so the
+policy engine's argument classifier knows each tool's declared input
+schema before the first call arrives.
 
-Responses are also inspected, in two passes, for a `tools/call` result
-the policy already allowed through:
+Responses are also inspected, in two passes, for any `tools/call`,
+`resources/read` or `prompts/get` the proxy let through:
 
-1. InjectionDetector scans the text content for instruction-shaped text
-   (the poisoned-webpage attack: fetched content trying to redirect what
-   the agent does next). A hit blocks the *entire* result — it's
-   replaced with an isError result — rather than trying to strip just
+1. InjectionDetector scans every piece of text content — `text` items,
+   embedded `resource` items with text, `resources/read` contents,
+   `prompts/get` messages, `structuredContent` string leaves — for
+   instruction-shaped text (the poisoned-webpage attack: fetched
+   content trying to redirect what the agent does next). A hit blocks
+   the *entire* result — replaced with an isError result for tool
+   calls, a JSON-RPC error otherwise — rather than trying to strip just
    the offending sentence.
 2. If nothing was blocked, SecretRedactor scans and masks known secret
    formats in what's left, in place.
+
+Content that can't be scanned as text — images, audio, binary `blob`
+resources — is passed through and logged as such, so the audit trail
+shows where the scanners had no visibility instead of implying they
+looked.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from typing import IO, Dict, List, Optional, Tuple
 
 from .audit import AuditLog
@@ -40,6 +52,105 @@ POLICY_VIOLATION_ERROR_CODE = -32001
 # How long a tools/call waits for an in-flight tools/list response before
 # being evaluated with whatever schemas are known so far.
 SCHEMA_WAIT_SECONDS = 5.0
+
+# Methods whose responses carry content the output scanners look at.
+INSPECTED_METHODS = ("tools/call", "resources/read", "prompts/get")
+
+
+@dataclass
+class PendingRequest:
+    method: str
+    name: str  # tool name, resource uri, or prompt name — what the audit log calls it
+
+
+@dataclass
+class TextSlot:
+    """A string inside a result, addressed so it can be replaced in place."""
+    container: object  # dict or list
+    key: object        # str key or int index
+
+    @property
+    def text(self) -> str:
+        return self.container[self.key]  # type: ignore[index]
+
+    def replace(self, new_text: str) -> None:
+        self.container[self.key] = new_text  # type: ignore[index]
+
+
+def _content_item_slots(item, slots: List[TextSlot], unscannable: List[str]) -> None:
+    """One MCP content object: {type: text|image|audio|resource, ...}."""
+    if not isinstance(item, dict):
+        return
+    kind = item.get("type")
+    if kind == "text":
+        if isinstance(item.get("text"), str):
+            slots.append(TextSlot(item, "text"))
+        return
+    if kind == "resource":
+        resource = item.get("resource")
+        if isinstance(resource, dict) and isinstance(resource.get("text"), str):
+            slots.append(TextSlot(resource, "text"))
+        else:
+            unscannable.append("resource:blob")
+        return
+    unscannable.append(str(kind) if kind else "unknown")
+
+
+def _string_leaves(node, slots: List[TextSlot]) -> None:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str):
+                slots.append(TextSlot(node, key))
+            else:
+                _string_leaves(value, slots)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            if isinstance(value, str):
+                slots.append(TextSlot(node, index))
+            else:
+                _string_leaves(value, slots)
+
+
+def find_content(method: str, result) -> Tuple[List[TextSlot], List[str]]:
+    """Locates every scannable string in a result for the given method,
+    plus a description of each content item that *can't* be scanned.
+    Slots point into `result` itself, so replacing through them edits
+    the result in place — pass a copy if that matters."""
+    slots: List[TextSlot] = []
+    unscannable: List[str] = []
+    if not isinstance(result, dict):
+        return slots, unscannable
+
+    if method == "tools/call":
+        content = result.get("content")
+        if isinstance(content, list):
+            for item in content:
+                _content_item_slots(item, slots, unscannable)
+        if "structuredContent" in result:
+            _string_leaves(result["structuredContent"], slots)
+    elif method == "resources/read":
+        contents = result.get("contents")
+        if isinstance(contents, list):
+            for item in contents:
+                if not isinstance(item, dict):
+                    continue
+                if isinstance(item.get("text"), str):
+                    slots.append(TextSlot(item, "text"))
+                else:
+                    unscannable.append("resource:blob")
+    elif method == "prompts/get":
+        messages = result.get("messages")
+        if isinstance(messages, list):
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if isinstance(content, list):
+                    for item in content:
+                        _content_item_slots(item, slots, unscannable)
+                else:
+                    _content_item_slots(content, slots, unscannable)
+    return slots, unscannable
 
 
 class MCPProxy:
@@ -62,10 +173,10 @@ class MCPProxy:
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
-        # Maps a request id to the tool name it called, only for calls the
+        # Maps a request id to what was asked, only for requests the
         # policy allowed through to the real server. Written by the
         # client->server thread, read/popped by the server->client thread.
-        self._pending_tool_calls: Dict[object, str] = {}
+        self._pending: Dict[object, PendingRequest] = {}
         # Request ids of in-flight `tools/list` calls, so the matching
         # response can be recognized and its schemas registered. A
         # `tools/call` that arrives while one is in flight waits for it
@@ -121,29 +232,46 @@ class MCPProxy:
             return line
 
         method = message.get("method")
-        if method == "tools/list" and message.get("id") is not None:
-            with self._pending_lock:
-                self._pending_tools_list.add(message.get("id"))
-            return line
-        if method != "tools/call":
-            return line
-
+        request_id = message.get("id")
         params = message.get("params") or {}
-        tool_name = params.get("name", "<unknown>")
-        arguments = params.get("arguments") or {}
 
-        self._wait_for_pending_tools_list()
-        decision = self.policy.evaluate(tool_name, arguments)
-        self.audit.record(tool_name, arguments, decision)
+        if method == "tools/list" and request_id is not None:
+            with self._pending_lock:
+                self._pending_tools_list.add(request_id)
+            return line
+
+        if method == "tools/call":
+            name = params.get("name", "<unknown>")
+            arguments = params.get("arguments") or {}
+            self._wait_for_pending_tools_list()
+        elif method == "resources/read":
+            # A resource read is a file or network access under another
+            # name; the same rules apply to its uri.
+            name = "resources/read"
+            arguments = {"uri": params.get("uri")}
+        elif method == "prompts/get":
+            # Nothing dangerous to gate on the way in; tracked so the
+            # returned messages get scanned on the way out.
+            self._track(request_id, method, str(params.get("name", "<unknown>")))
+            return line
+        else:
+            return line
+
+        decision = self.policy.evaluate(name, arguments)
+        self.audit.record(name, arguments, decision)
 
         if decision.allowed:
-            if self._output_inspection_enabled():
-                with self._pending_lock:
-                    self._pending_tool_calls[message.get("id")] = tool_name
+            self._track(request_id, method, name if method == "tools/call" else str(arguments["uri"]))
             return line
 
-        self._reject(message.get("id"), decision.reason)
+        self._reject(request_id, decision.reason)
         return None
+
+    def _track(self, request_id, method: str, name: str) -> None:
+        if request_id is None or not self._output_inspection_enabled():
+            return
+        with self._pending_lock:
+            self._pending[request_id] = PendingRequest(method, name)
 
     def _wait_for_pending_tools_list(self) -> None:
         deadline = time.monotonic() + SCHEMA_WAIT_SECONDS
@@ -155,7 +283,12 @@ class MCPProxy:
                 self._schema_ready.wait(remaining)
 
     def _reject(self, request_id, reason: str) -> None:
-        error_response = {
+        self.stdout.write(json.dumps(self._error_response(request_id, reason)) + "\n")
+        self.stdout.flush()
+
+    @staticmethod
+    def _error_response(request_id, reason: str) -> dict:
+        return {
             "jsonrpc": "2.0",
             "id": request_id,
             "error": {
@@ -163,8 +296,6 @@ class MCPProxy:
                 "message": f"AgentGuard: blocked by policy — {reason}",
             },
         }
-        self.stdout.write(json.dumps(error_response) + "\n")
-        self.stdout.flush()
 
     def _pump_server_to_client(self, proc: subprocess.Popen) -> None:
         for line in proc.stdout:
@@ -197,70 +328,63 @@ class MCPProxy:
             return line
 
         with self._pending_lock:
-            tool_name = self._pending_tool_calls.pop(message_id, None)
-        if tool_name is None or "result" not in message:
+            pending = self._pending.pop(message_id, None)
+        if pending is None or "result" not in message:
             return line
 
-        blocked_message, injection_rules = self._check_injection(message)
-        if injection_rules:
-            self.audit.record_injection_block(tool_name, injection_rules)
-            return json.dumps(blocked_message) + "\n"
+        # Slots point into the message; work on a copy so a blocked or
+        # redacted response is built without mutating what was parsed.
+        message = copy.deepcopy(message)
+        slots, unscannable = find_content(pending.method, message.get("result"))
+        if unscannable:
+            self.audit.record_unscannable(pending.name, pending.method, unscannable)
 
-        redacted_message, redaction_rules = self._redact_result(message)
+        injection_rules = self._check_injection(slots)
+        if injection_rules:
+            self.audit.record_injection_block(pending.name, injection_rules, pending.method)
+            return json.dumps(self._blocked_response(message, pending.method, injection_rules)) + "\n"
+
+        redaction_rules = self._redact(slots)
         if not redaction_rules:
             return line
 
-        self.audit.record_redaction(tool_name, redaction_rules)
-        return json.dumps(redacted_message) + "\n"
+        self.audit.record_redaction(pending.name, redaction_rules, pending.method)
+        return json.dumps(message) + "\n"
 
-    def _check_injection(self, message: dict) -> Tuple[dict, List[str]]:
+    def _check_injection(self, slots: List[TextSlot]) -> List[str]:
         if self.injection_detector is None or not self.injection_detector.enabled:
-            return message, []
-
+            return []
         matched_rules: List[str] = []
-        for text in self._iter_text_content(message):
-            matched_rules.extend(self.injection_detector.scan(text))
-        if not matched_rules:
-            return message, []
+        for slot in slots:
+            matched_rules.extend(self.injection_detector.scan(slot.text))
+        return sorted(set(matched_rules))
 
-        matched_rules = sorted(set(matched_rules))
-        blocked_result = {
-            "content": [{
-                "type": "text",
-                "text": (
-                    "AgentGuard: this tool output was blocked — suspected prompt "
-                    f"injection (matched rules: {', '.join(matched_rules)})."
-                ),
-            }],
-            "isError": True,
-        }
-        return {**message, "result": blocked_result}, matched_rules
+    def _blocked_response(self, message: dict, method: str, matched_rules: List[str]) -> dict:
+        reason = (
+            "this tool output was blocked — suspected prompt injection "
+            f"(matched rules: {', '.join(matched_rules)})"
+        )
+        if method == "tools/call":
+            # A tool-level error, which is how MCP says a tool reports
+            # failure; the agent sees a normal result shape with isError.
+            return {
+                **message,
+                "result": {
+                    "content": [{"type": "text", "text": f"AgentGuard: {reason}."}],
+                    "isError": True,
+                },
+            }
+        # resources/read and prompts/get results have no isError; the
+        # only way to withhold them is a JSON-RPC error.
+        return self._error_response(message.get("id"), reason)
 
-    def _redact_result(self, message: dict) -> Tuple[dict, List[str]]:
-        result = message.get("result") or {}
-        content = result.get("content")
-        if not isinstance(content, list):
-            return message, []
-
+    def _redact(self, slots: List[TextSlot]) -> List[str]:
+        if self.redactor is None or not self.redactor.enabled:
+            return []
         all_rule_names: List[str] = []
-        new_content = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
-                redacted_text, rule_names = self.redactor.redact(item["text"])
+        for slot in slots:
+            redacted_text, rule_names = self.redactor.redact(slot.text)
+            if rule_names:
                 all_rule_names.extend(rule_names)
-                item = {**item, "text": redacted_text}
-            new_content.append(item)
-
-        if not all_rule_names:
-            return message, []
-        return {**message, "result": {**result, "content": new_content}}, all_rule_names
-
-    @staticmethod
-    def _iter_text_content(message: dict):
-        result = message.get("result") or {}
-        content = result.get("content")
-        if not isinstance(content, list):
-            return
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
-                yield item["text"]
+                slot.replace(redacted_text)
+        return all_rule_names

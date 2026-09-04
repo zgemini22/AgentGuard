@@ -17,7 +17,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import Iterator, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import yaml
 
@@ -73,6 +73,21 @@ class _CategoryRule:
     deny_patterns: list = field(default_factory=list)
     allow_patterns: list = field(default_factory=list)
     default_action: str = "allow"  # applies only when allow_patterns is non-empty
+
+
+def file_uri_path(value: str) -> Optional[str]:
+    """`file:///home/u/x` -> `/home/u/x`; `file:///C:/x` -> `C:/x`. None
+    for anything that isn't a file URI."""
+    parsed = urlparse(value)
+    if parsed.scheme.lower() != "file":
+        return None
+    path = unquote(parsed.path)
+    if parsed.netloc and parsed.netloc != "localhost":
+        # file://host/share/x — a UNC-style path; keep the host in it.
+        path = f"//{parsed.netloc}{path}"
+    elif re.match(r"^/[A-Za-z]:", path):
+        path = path[1:]
+    return path or "/"
 
 
 def iter_string_arguments(arguments, prefix: str = "") -> Iterator[Tuple[str, str]]:
@@ -147,8 +162,15 @@ class PolicyEngine:
             result = self.classifier.classify(tool_name, leaf)
             if result is None:
                 classified.append(ClassifiedArgument(key, value, None, "unclassified"))
-            else:
-                classified.append(ClassifiedArgument(key, value, result.category, result.source))
+                continue
+            category, source = result.category, result.source
+            if category == NETWORK:
+                # A file:// URI under a URL-shaped argument is a file
+                # read wearing a network hat; judge it by the path rules.
+                file_path = file_uri_path(value)
+                if file_path is not None:
+                    category, source, value = FILE_ACCESS, source + ":file-uri", file_path
+            classified.append(ClassifiedArgument(key, value, category, source))
         return classified
 
     def evaluate(self, tool_name: str, arguments: dict) -> Decision:

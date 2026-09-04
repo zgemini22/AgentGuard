@@ -128,28 +128,43 @@ class AuditLog:
         }
         return self._append(entry)
 
-    def record_redaction(self, tool_name: str, rule_names: List[str]) -> dict:
+    def record_redaction(self, tool_name: str, rule_names: List[str], method: str = "tools/call") -> dict:
         """Logs that secrets were masked in a tool's output. Never logs the
         secret values themselves — only which rules matched and how many
         times, so the audit log itself can't leak what it caught."""
         entry = {
             "ts": time.time(),
             "event": "redaction",
+            "method": method,
             "tool": tool_name,
             "rules_matched": rule_names,
             "count": len(rule_names),
         }
         return self._append(entry)
 
-    def record_injection_block(self, tool_name: str, rule_names: List[str]) -> dict:
+    def record_injection_block(self, tool_name: str, rule_names: List[str], method: str = "tools/call") -> dict:
         """Logs that a tool's entire output was blocked as a suspected
         prompt injection. Rule names only, same reasoning as redaction —
         the log records what was caught, not the payload that triggered it."""
         entry = {
             "ts": time.time(),
             "event": "injection_blocked",
+            "method": method,
             "tool": tool_name,
             "rules_matched": rule_names,
+        }
+        return self._append(entry)
+
+    def record_unscannable(self, tool_name: str, method: str, kinds: List[str]) -> dict:
+        """Logs that a response carried content the output scanners could
+        not read as text (images, audio, binary blobs). It was passed
+        through; this entry is so the log doesn't imply it was checked."""
+        entry = {
+            "ts": time.time(),
+            "event": "unscannable_content",
+            "method": method,
+            "tool": tool_name,
+            "kinds": kinds,
         }
         return self._append(entry)
 

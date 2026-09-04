@@ -36,27 +36,37 @@ flowchart LR
 The proxy speaks the MCP stdio transport (newline-delimited JSON-RPC 2.0)
 on both sides.
 
-**Requests** (agent -> server): every message that isn't a `tools/call`
-is passed through untouched. A `tools/call` request is evaluated against
-the policy before it is forwarded:
+**Requests** (agent -> server): a `tools/call` request is evaluated
+against the policy before it is forwarded, and so is a `resources/read`
+(its `uri` goes through the same rules — a `file://` URI is judged as a
+file path). Everything else is passed through untouched.
 
 - **allowed** — forwarded to the real server.
 - **denied** — the real server never sees the request; the agent gets a
   JSON-RPC error back immediately.
 
-**Responses** (server -> agent): for a call the policy just allowed, the
-text content of the `tools/call` result goes through two more checks
-before reaching the agent:
+**Responses** (server -> agent): for a `tools/call`, `resources/read`
+or `prompts/get` the proxy let through, every piece of text in the
+result — `text` items, embedded `resource` items, `structuredContent`,
+prompt messages — goes through two more checks before reaching the
+agent:
 
 1. **Injection detection** — is this instruction-shaped text trying to
-   redirect the agent (the poisoned-webpage attack)? A hit replaces the
-   *entire* result with an `isError` response; nothing from it reaches
-   the agent.
+   redirect the agent (the poisoned-webpage attack)? A hit withholds
+   the *entire* result (an `isError` result for tool calls, a JSON-RPC
+   error otherwise); nothing from it reaches the agent.
 2. **Secret redaction** — if nothing was blocked, known secret formats
    in what's left are masked in place as `[REDACTED:<rule-name>]`. A
    call can be legitimate and still return something (an
    accidentally-committed `.env`, a token in an API response) that
    shouldn't reach the agent's context unmasked.
+
+Both scanners look at a normalized form of the text (zero-width
+characters stripped, homoglyphs folded, NFKC, base64 payloads decoded)
+so the cheap encoding tricks don't work; redaction still edits only the
+matched spans of the original. Content that isn't text — images, audio,
+binary blobs — is passed through and logged as `unscannable_content`,
+so the audit trail says where the scanners had no visibility.
 
 Every policy decision, redaction, and injection block is recorded in the
 audit log, which is itself hash-chained — see
