@@ -4,10 +4,17 @@ Three independent rule categories (file access, command execution,
 network access), matched against tool-call arguments. Which category an
 argument belongs to is decided by `agentguard.classify` — by the tool's
 declared schema when the proxy has seen one, by key-name conventions
-otherwise. A call is denied if any argument matches a deny rule in its
-category; everything else defaults to allow. Categories the config
-doesn't mention are skipped, not denied — this is an allowlist/denylist
-engine, not a full sandbox.
+otherwise. Every category has the same shape: `deny_patterns` (a match
+denies), then `allow_patterns` + `default_action` (a value on no
+allow pattern is denied when `default_action: deny`). File and network
+patterns are globs (on the expanded path / on the hostname); command
+patterns are regexes. Categories the config doesn't mention are
+skipped, not denied — this is an allowlist/denylist engine, not a full
+sandbox.
+
+The config is validated strictly on load (`agentguard.validate`): an
+unknown key or a broken pattern is a startup error, never a silently
+disabled rule.
 """
 
 from __future__ import annotations
@@ -16,11 +23,10 @@ import fnmatch
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Iterator, List, Optional, Tuple
+from typing import Callable, Iterator, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
-import yaml
-
+from .validate import PolicyError, load_policy, validate_policy  # noqa: F401
 from .classify import (  # noqa: F401  (re-exported for backward compatibility)
     COMMAND_ARG_KEYS,
     COMMAND_EXEC,
@@ -72,7 +78,7 @@ class _CategoryRule:
     enabled: bool = True
     deny_patterns: list = field(default_factory=list)
     allow_patterns: list = field(default_factory=list)
-    default_action: str = "allow"  # applies only when allow_patterns is non-empty
+    default_action: str = "allow"  # what happens to a value on no allow pattern; only matters when allow_patterns is set
 
 
 def file_uri_path(value: str) -> Optional[str]:
@@ -115,6 +121,13 @@ def iter_string_arguments(arguments, prefix: str = "") -> Iterator[Tuple[str, st
 class PolicyEngine:
     def __init__(self, config: dict, classifier: Optional[ArgumentClassifier] = None):
         config = config or {}
+        # Strict: an unknown key, a non-compiling regex, a string where a
+        # bool belongs — all fail here, at construction, rather than
+        # silently loading as a default. See agentguard.validate.
+        errors = validate_policy(config)
+        if errors:
+            raise PolicyError(errors)
+        self.config = config
         self._file_rule = self._load_category(config.get("file_access", {}))
         self._command_rule = self._load_category(config.get("command_exec", {}))
         self._network_rule = self._load_category(config.get("network", {}))
@@ -132,9 +145,7 @@ class PolicyEngine:
 
     @classmethod
     def from_yaml(cls, path: str) -> "PolicyEngine":
-        with open(path, "r") as f:
-            raw = yaml.safe_load(f) or {}
-        return cls(raw)
+        return cls(load_policy(path))
 
     @staticmethod
     def _load_category(raw: dict) -> _CategoryRule:
@@ -222,45 +233,35 @@ class PolicyEngine:
         )
 
     def _check(self, category: str, value: str, rule: _CategoryRule) -> Optional[Decision]:
-        if category == FILE_ACCESS:
-            return self._check_deny_glob(value, rule, category)
-        if category == COMMAND_EXEC:
-            return self._check_deny_regex(value, rule, category)
-        return self._check_network(value, rule)
-
-    @staticmethod
-    def _check_deny_glob(value: str, rule: _CategoryRule, category: str) -> Optional[Decision]:
-        expanded = os.path.expanduser(value)
+        """Same semantics for every category: a deny pattern match denies;
+        otherwise, if there's an allowlist and the value isn't on it,
+        `default_action` decides. What a "match" means differs — glob on
+        the expanded path, glob on the hostname, regex on the command."""
+        subject, matches = self._matcher(category, value)
         for pattern in rule.deny_patterns:
-            if fnmatch.fnmatch(expanded, os.path.expanduser(pattern)):
+            if matches(pattern):
                 return Decision(
                     False, category,
                     f"value '{value}' matches deny pattern '{pattern}'",
                     pattern,
                 )
-        return None
-
-    @staticmethod
-    def _check_deny_regex(value: str, rule: _CategoryRule, category: str) -> Optional[Decision]:
-        for pattern in rule.deny_patterns:
-            if re.search(pattern, value):
-                return Decision(
-                    False, category,
-                    f"value '{value}' matches deny pattern '{pattern}'",
-                    pattern,
-                )
-        return None
-
-    @staticmethod
-    def _check_network(value: str, rule: _CategoryRule) -> Optional[Decision]:
-        host = urlparse(value).hostname or value
-        if not rule.allow_patterns:
-            return None
-        if any(fnmatch.fnmatch(host, pattern) for pattern in rule.allow_patterns):
+        if not rule.allow_patterns or any(matches(p) for p in rule.allow_patterns):
             return None
         if rule.default_action == "deny":
+            noun = "host" if category == NETWORK else "value"
             return Decision(
-                False, "network",
-                f"host '{host}' is not in the network allowlist",
+                False, category,
+                f"{noun} '{subject}' is not in the {category} allowlist",
             )
         return None
+
+    @staticmethod
+    def _matcher(category: str, value: str) -> Tuple[str, Callable[[str], bool]]:
+        """Returns (what is being matched, pattern -> bool)."""
+        if category == FILE_ACCESS:
+            expanded = os.path.expanduser(value)
+            return expanded, lambda p: fnmatch.fnmatch(expanded, os.path.expanduser(p))
+        if category == NETWORK:
+            host = urlparse(value).hostname or value
+            return host, lambda p: fnmatch.fnmatch(host, p)
+        return value, lambda p: re.search(p, value) is not None

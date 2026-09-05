@@ -1,0 +1,169 @@
+"""Strict validation of a policy config before anything is built from it.
+
+Every section of the policy used to load with `.get(key, default)`,
+which meant a misspelled key was a silent no-op: `deny_pattern:` gave
+you an empty deny list and no error, `enabled: "false"` (a string) was
+truthy, a regex that didn't compile blew up on the first call instead
+of at startup. For a security tool, a typo that turns a rule off
+without saying so is a bug in the tool, not the config.
+
+This module is the one place that knows the full shape of a policy
+file. It's deliberately declarative — a table of sections, keys, and
+value checks — so that adding a policy feature means adding a row here,
+and forgetting to is a test failure (`test_validate.py` asserts every
+key the engines read is a key the validator knows).
+
+Validation returns a list of human-readable errors (empty means valid)
+rather than raising on the first one, so a user fixing a config sees
+all of it at once. `load_policy()` is the raise-on-error wrapper the
+CLI and `PolicyEngine` use.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Callable, Dict, List, Optional
+
+import yaml
+
+ACTIONS = ("allow", "deny")
+
+
+class PolicyError(ValueError):
+    def __init__(self, errors: List[str]):
+        self.errors = errors
+        super().__init__("invalid policy:\n  " + "\n  ".join(errors))
+
+
+Check = Callable[[Any, str, List[str]], None]
+
+
+def _is_bool(value, where, errors):
+    if not isinstance(value, bool):
+        errors.append(f"{where}: expected true/false, got {value!r}")
+
+
+def _is_str(value, where, errors):
+    if not isinstance(value, str) or not value:
+        errors.append(f"{where}: expected a non-empty string, got {value!r}")
+
+
+def _is_action(value, where, errors, allowed=ACTIONS):
+    if value not in allowed:
+        errors.append(f"{where}: expected one of {', '.join(allowed)}, got {value!r}")
+
+
+def _is_regex(value, where, errors):
+    if not isinstance(value, str):
+        errors.append(f"{where}: expected a regex string, got {value!r}")
+        return
+    try:
+        re.compile(value)
+    except re.error as e:
+        errors.append(f"{where}: regex does not compile: {e}")
+
+
+def _list_of(item_check: Check) -> Check:
+    def check(value, where, errors):
+        if value is None:
+            return  # an explicitly empty list in YAML
+        if not isinstance(value, list):
+            errors.append(f"{where}: expected a list, got {type(value).__name__}")
+            return
+        for i, item in enumerate(value):
+            item_check(item, f"{where}[{i}]", errors)
+    return check
+
+
+def _mapping(keys: Dict[str, Check], *, required: tuple = ()) -> Check:
+    """A dict whose keys must all be in `keys`; each value is checked."""
+    def check(value, where, errors):
+        if value is None:
+            return  # `section:` with nothing under it
+        if not isinstance(value, dict):
+            errors.append(f"{where}: expected a mapping, got {type(value).__name__}")
+            return
+        for key in value:
+            if key not in keys:
+                hint = _closest(key, keys)
+                errors.append(
+                    f"{where}: unknown key {key!r}"
+                    + (f" (did you mean {hint!r}?)" if hint else "")
+                    + f"; known keys: {', '.join(sorted(keys))}"
+                )
+        for key in required:
+            if key not in value:
+                errors.append(f"{where}: missing required key {key!r}")
+        for key, val in value.items():
+            if key in keys:
+                keys[key](val, f"{where}.{key}", errors)
+    return check
+
+
+def _closest(key: str, candidates) -> Optional[str]:
+    """Cheap typo hint: the candidate sharing the longest common prefix
+    with `key`, if that prefix is most of the key."""
+    best, best_len = None, 0
+    for candidate in candidates:
+        n = 0
+        for a, b in zip(key, candidate):
+            if a != b:
+                break
+            n += 1
+        if n > best_len:
+            best, best_len = candidate, n
+    return best if best and best_len >= max(3, len(key) - 2) else None
+
+
+def _named_rule(pattern_check: Check) -> Check:
+    return _mapping({"name": _is_str, "pattern": pattern_check}, required=("name", "pattern"))
+
+
+def _category(pattern_check: Check) -> Check:
+    return _mapping({
+        "enabled": _is_bool,
+        "deny_patterns": _list_of(pattern_check),
+        "allow_patterns": _list_of(pattern_check),
+        "default_action": _is_action,
+    })
+
+
+def _rules_section() -> Check:
+    return _mapping({
+        "enabled": _is_bool,
+        "rules": _list_of(_named_rule(_is_regex)),
+    })
+
+
+# The full shape of a policy file. Order here is the order check-policy
+# prints sections in.
+POLICY_SCHEMA: Dict[str, Check] = {
+    "unclassified_arguments": _is_action,
+    "file_access": _category(_is_str),
+    "command_exec": _category(_is_regex),
+    "network": _category(_is_str),
+    "redaction": _rules_section(),
+    "injection_detection": _rules_section(),
+}
+
+
+def validate_policy(raw) -> List[str]:
+    """Returns every problem found with `raw` as a policy config. An
+    empty list means the config is valid. `None` (an empty file) is a
+    valid, empty policy."""
+    errors: List[str] = []
+    if raw is None:
+        return errors
+    _mapping(POLICY_SCHEMA)(raw, "policy", errors)
+    return errors
+
+
+def load_policy(path: str) -> dict:
+    """Parses and validates a policy YAML file. Raises PolicyError with
+    every problem found, FileNotFoundError / yaml.YAMLError as usual."""
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    errors = validate_policy(raw)
+    if errors:
+        raise PolicyError(errors)
+    return raw or {}

@@ -107,6 +107,40 @@ argument is unclassified, which closes the rename-the-argument bypass
 outright. Flip it once `agentguard check-policy --probe` shows your
 server's real calls classify cleanly.
 
+Every category has the same shape: `deny_patterns` (a match denies),
+then `allow_patterns` with `default_action` (a value matching no allow
+pattern is denied when `default_action: deny`). Only the pattern
+language differs — globs for paths and hostnames, regexes for commands.
+
+### Validation and `check-policy`
+
+The policy file is validated strictly when loaded: an unknown key
+(`deny_pattern:` instead of `deny_patterns:`), a regex that doesn't
+compile, a string where a boolean belongs — each is a startup error
+that names the problem, never a rule silently loaded as empty. Every
+error is reported at once.
+
+```bash
+agentguard check-policy --config policies/default.yaml
+```
+
+prints the effective policy — every pattern echoed back under its
+category, every rule name — and `OK: policy is valid.` (exit 0), or the
+list of problems (exit 2). To see what the engine would do with a
+specific call, and *why*:
+
+```bash
+agentguard check-policy --probe read_file '{"path": "~/.ssh/id_rsa"}'
+```
+
+shows how each argument was classified and by what (`file_access
+(key_name)`, `network (schema:format)`, `UNCLASSIFIED`), the decision,
+the matched rule, and the reason. Exit 0 for allow, 3 for deny. Pass
+`--tools tools.json` (a saved `tools/list` response) to classify by
+schema exactly as the proxy would at runtime — the way to find out
+whether a server's schemas are good enough to set
+`unclassified_arguments: deny`.
+
 ## Secret redaction (v1)
 
 A separate `redaction` section in the same YAML config (see
