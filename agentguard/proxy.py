@@ -47,6 +47,7 @@ from .audit import AuditLog
 from .injection import InjectionDetector
 from .policy import PolicyEngine
 from .redact import SecretRedactor
+from .session import Session
 
 POLICY_VIOLATION_ERROR_CODE = -32001
 # How long a tools/call waits for an in-flight tools/list response before
@@ -164,6 +165,7 @@ class MCPProxy:
         stdin: IO[str] = sys.stdin,
         stdout: IO[str] = sys.stdout,
         stderr: IO[str] = sys.stderr,
+        session: Optional[Session] = None,
     ):
         self.server_cmd = server_cmd
         self.policy = policy
@@ -173,6 +175,9 @@ class MCPProxy:
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
+        # The session wraps the policy engine's classifier so tools/list
+        # feeds both the inventory and the schema cache in one call.
+        self.session = session if session is not None else Session.new(server_cmd, policy.classifier)
         # Maps a request id to what was asked, only for requests the
         # policy allowed through to the real server. Written by the
         # client->server thread, read/popped by the server->client thread.
@@ -192,6 +197,7 @@ class MCPProxy:
         )
 
     def run(self) -> int:
+        self.audit.begin_session(self.session)
         proc = subprocess.Popen(
             self.server_cmd,
             stdin=subprocess.PIPE,
@@ -211,7 +217,9 @@ class MCPProxy:
                 proc.stdin.close()
             proc.wait()
             server_reader.join(timeout=1)
-        return proc.returncode or 0
+        exit_code = proc.returncode or 0
+        self.audit.end_session(self.session, exit_code)
+        return exit_code
 
     def _pump_client_to_server(self, proc: subprocess.Popen) -> None:
         for line in self.stdin:
@@ -318,7 +326,7 @@ class MCPProxy:
             if is_tools_list:
                 result = message.get("result")
                 if isinstance(result, dict):
-                    self.policy.classifier.register_tools(result.get("tools"))
+                    self.session.register_tools(result.get("tools"))
                 self._pending_tools_list.discard(message_id)
                 self._schema_ready.notify_all()
         if is_tools_list:

@@ -22,6 +22,7 @@ from .injection import InjectionDetector
 from .policy import PolicyEngine
 from .proxy import MCPProxy
 from .redact import SecretRedactor
+from .session import Session
 from .validate import PolicyError, load_policy
 
 # check-policy --probe exit code when the probed call would be denied.
@@ -95,7 +96,11 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     redactor = SecretRedactor.from_config(raw_config)
     injection_detector = InjectionDetector.from_config(raw_config)
     audit = AuditLog(args.audit_log)
-    proxy = MCPProxy(server_cmd, policy, audit, redactor=redactor, injection_detector=injection_detector)
+    session = Session.new(server_cmd, policy.classifier, policy_path=args.config)
+    proxy = MCPProxy(
+        server_cmd, policy, audit,
+        redactor=redactor, injection_detector=injection_detector, session=session,
+    )
     return proxy.run()
 
 

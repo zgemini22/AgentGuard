@@ -64,7 +64,7 @@ def test_blocks_ssh_key_read_and_never_reaches_server(tmp_path):
     assert "error" in call_response
     assert "SUPER-SECRET-KEY" not in json.dumps(call_response)
 
-    denied = [e for e in audit_entries if e["tool"] == "read_file"]
+    denied = [e for e in audit_entries if e.get("tool") == "read_file"]
     assert len(denied) == 1
     assert denied[0]["allowed"] is False
 
@@ -85,7 +85,7 @@ def test_allows_normal_file_read_end_to_end(tmp_path):
     call_response = next(r for r in responses if r.get("id") == 2)
     assert call_response["result"]["content"][0]["text"] == "hello world"
 
-    allowed = [e for e in audit_entries if e["tool"] == "read_file"]
+    allowed = [e for e in audit_entries if e.get("tool") == "read_file"]
     assert len(allowed) == 1
     assert allowed[0]["allowed"] is True
 
@@ -96,7 +96,7 @@ def test_non_tool_call_messages_pass_through_untouched():
 
     assert len(responses) == 1
     assert responses[0]["result"]["serverInfo"]["name"] == "agentguard-demo-vulnerable-server"
-    assert audit_entries == []
+    assert [e["event"] for e in audit_entries] == ["session_start", "session_end"]
 
 
 def test_redacts_secret_found_in_allowed_tool_output(tmp_path):
@@ -198,7 +198,7 @@ def test_tools_list_schema_is_captured_and_used_to_classify_argument(tmp_path):
     call_response = next(r for r in responses if r.get("id") == 3)
     assert "error" in call_response
     assert "SUPER-SECRET-KEY" not in json.dumps(call_response)
-    denied = [e for e in audit_entries if e["tool"] == "open_thing"]
+    denied = [e for e in audit_entries if e.get("tool") == "open_thing"]
     assert denied[0]["allowed"] is False
     assert denied[0]["argument_categories"] == {"where": "file_access"}
     # tools/list itself still passes through to the client untouched.
@@ -207,7 +207,7 @@ def test_tools_list_schema_is_captured_and_used_to_classify_argument(tmp_path):
     responses, audit_entries = run_proxy([init, call], server=SCHEMA_ONLY_SERVER)
     call_response = next(r for r in responses if r.get("id") == 3)
     assert call_response["result"]["content"][0]["text"] == "SUPER-SECRET-KEY"  # the v1 gap, still open without a schema
-    allowed = [e for e in audit_entries if e["tool"] == "open_thing"]
+    allowed = [e for e in audit_entries if e.get("tool") == "open_thing"]
     assert allowed[0]["argument_categories"] == {"where": "unclassified"}
 
 

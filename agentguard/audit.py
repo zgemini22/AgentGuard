@@ -94,6 +94,22 @@ class AuditLog:
         self.path = Path(path)
         self._lock = threading.Lock()
         self._last_hash = self._load_last_hash()
+        # Stamped onto every entry once a session begins, so entries
+        # from different runs sharing one log file can be told apart.
+        self.session_id: Optional[str] = None
+
+    def begin_session(self, session) -> dict:
+        """Stamps every subsequent entry with the session id and writes
+        the `session_start` entry: what was wrapped, under which policy
+        (by content hash, so a later edit to the file is detectable),
+        with which AgentGuard."""
+        self.session_id = session.id
+        entry = {"ts": session.started_at, "event": "session_start", **session.start_metadata()}
+        return self._append(entry)
+
+    def end_session(self, session, exit_code: int) -> dict:
+        entry = {"ts": time.time(), "event": "session_end", **session.end_metadata(exit_code)}
+        return self._append(entry)
 
     def _load_last_hash(self) -> str:
         if not self.path.exists():
@@ -173,6 +189,8 @@ class AuditLog:
         # chain valid under concurrent callers (the proxy's client->server
         # and server->client threads can both be recording at once).
         with self._lock:
+            if self.session_id is not None:
+                entry["session_id"] = self.session_id
             entry["prev_hash"] = self._last_hash
             entry["hash"] = compute_entry_hash(entry)
             with self.path.open("a") as f:

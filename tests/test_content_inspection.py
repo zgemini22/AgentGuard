@@ -164,7 +164,7 @@ def test_prompts_get_clean_messages_pass_through():
     responses, audit = run_proxy(requests, config=INJECTION_ONLY)
     response = next(r for r in responses if r.get("id") == 2)
     assert "Project README" in response["result"]["messages"][0]["content"]["text"]
-    assert audit == []
+    assert [e["event"] for e in audit] == ["session_start", "session_end"]
 
 
 def test_unscannable_content_is_passed_through_and_logged():
