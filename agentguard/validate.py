@@ -115,6 +115,11 @@ def _closest(key: str, candidates) -> Optional[str]:
     return best if best and best_len >= max(3, len(key) - 2) else None
 
 
+def _is_positive_int(value, where, errors):
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        errors.append(f"{where}: expected a positive integer, got {value!r}")
+
+
 def _named_rule(pattern_check: Check) -> Check:
     return _mapping({"name": _is_str, "pattern": pattern_check}, required=("name", "pattern"))
 
@@ -137,11 +142,20 @@ def _rules_section() -> Check:
 
 # The full shape of a policy file. Order here is the order check-policy
 # prints sections in.
+BUDGET_KEYS = (
+    "max_file_calls",
+    "max_network_calls",
+    "max_command_calls",
+    "max_output_bytes_per_call",
+    "max_total_output_bytes",
+)
+
 POLICY_SCHEMA: Dict[str, Check] = {
     "unclassified_arguments": _is_action,
     "file_access": _category(_is_str),
     "command_exec": _category(_is_regex),
     "network": _category(_is_str),
+    "budgets": _mapping({key: _is_positive_int for key in BUDGET_KEYS}),
     "redaction": _rules_section(),
     "injection_detection": _rules_section(),
 }

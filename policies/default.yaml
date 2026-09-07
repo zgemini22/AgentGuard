@@ -51,6 +51,23 @@ network:
     - "*.example.com"
   default_action: deny
 
+# Session budgets: ceilings a single proxy run can't exceed however each
+# individual call looks. The cheap, deterministic answer to incremental
+# exfiltration ("read one more file, then one more...") and to a tool
+# that returns a 50 MB blob. A call over a per-category ceiling is
+# denied on the way in with the budget named; a result over
+# max_output_bytes_per_call is withheld; once max_total_output_bytes
+# has been delivered, every further call is denied. Only forwarded
+# calls and delivered bytes count. All keys optional — unset means
+# unlimited. Commented out here because the right numbers depend on
+# the workload; these are a starting point for an interactive agent.
+# budgets:
+#   max_file_calls: 500
+#   max_network_calls: 100
+#   max_command_calls: 200
+#   max_output_bytes_per_call: 2000000
+#   max_total_output_bytes: 50000000
+
 # Redaction runs on tool *output*, after a call has already been allowed
 # through by the rules above — a call can be legitimate and still return
 # something (a checked-in .env dump, a token embedded in an API

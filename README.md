@@ -112,6 +112,26 @@ then `allow_patterns` with `default_action` (a value matching no allow
 pattern is denied when `default_action: deny`). Only the pattern
 language differs — globs for paths and hostnames, regexes for commands.
 
+### Session budgets
+
+Every proxy run is a *session* (it gets an id, and every audit entry
+carries it). A `budgets:` section sets ceilings a session can't exceed
+however each individual call looks — the deterministic answer to
+"read one more file, then one more" and to a tool that hands back a
+50 MB blob:
+
+```yaml
+budgets:
+  max_file_calls: 500            # allowed calls touching a path
+  max_network_calls: 100         # allowed calls touching a URL/host
+  max_command_calls: 200
+  max_output_bytes_per_call: 2000000   # a bigger result is withheld
+  max_total_output_bytes: 50000000     # after this, every call is denied
+```
+
+Only forwarded calls and delivered bytes count; a denied call consumed
+nothing. Every key is optional and unset means unlimited.
+
 ### Validation and `check-policy`
 
 The policy file is validated strictly when loaded: an unknown key

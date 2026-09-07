@@ -171,6 +171,20 @@ class AuditLog:
         }
         return self._append(entry)
 
+    def record_budget_block(self, tool_name: str, method: str, budget: str, nbytes: int) -> dict:
+        """Logs that a result was withheld because it broke a per-call
+        output budget. (Calls denied for an exhausted budget are ordinary
+        policy_decision entries with category "budget".)"""
+        entry = {
+            "ts": time.time(),
+            "event": "budget_block",
+            "method": method,
+            "tool": tool_name,
+            "budget": budget,
+            "bytes": nbytes,
+        }
+        return self._append(entry)
+
     def record_unscannable(self, tool_name: str, method: str, kinds: List[str]) -> dict:
         """Logs that a response carried content the output scanners could
         not read as text (images, audio, binary blobs). It was passed

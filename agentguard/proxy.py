@@ -53,6 +53,9 @@ POLICY_VIOLATION_ERROR_CODE = -32001
 # How long a tools/call waits for an in-flight tools/list response before
 # being evaluated with whatever schemas are known so far.
 SCHEMA_WAIT_SECONDS = 5.0
+# How long a call waits for earlier results to be counted when a total
+# output budget is configured (see _handle_client_line).
+RESPONSE_WAIT_SECONDS = 30.0
 
 # Methods whose responses carry content the output scanners look at.
 INSPECTED_METHODS = ("tools/call", "resources/read", "prompts/get")
@@ -189,7 +192,7 @@ class MCPProxy:
         # slip a call past the policy before its schema is known.
         self._pending_tools_list: set = set()
         self._pending_lock = threading.Lock()
-        self._schema_ready = threading.Condition(self._pending_lock)
+        self._pending_changed = threading.Condition(self._pending_lock)
 
     def _output_inspection_enabled(self) -> bool:
         return (self.redactor is not None and self.redactor.enabled) or (
@@ -265,30 +268,50 @@ class MCPProxy:
         else:
             return line
 
-        decision = self.policy.evaluate(name, arguments)
+        if "max_total_output_bytes" in self.policy.budgets:
+            # The total is only exact if every earlier result has been
+            # counted; a pipelining client would otherwise get several
+            # calls judged against a stale number. Nothing else pays
+            # this serialization cost.
+            self._wait_for_pending_responses()
+
+        decision = self.policy.evaluate(name, arguments, self.session)
         self.audit.record(name, arguments, decision)
 
         if decision.allowed:
+            self.session.note_allowed_call(decision)
             self._track(request_id, method, name if method == "tools/call" else str(arguments["uri"]))
             return line
 
         self._reject(request_id, decision.reason)
         return None
 
+    def _inspects_responses(self) -> bool:
+        return self._output_inspection_enabled() or self.policy.tracks_output_size
+
     def _track(self, request_id, method: str, name: str) -> None:
-        if request_id is None or not self._output_inspection_enabled():
+        if request_id is None or not self._inspects_responses():
             return
         with self._pending_lock:
             self._pending[request_id] = PendingRequest(method, name)
 
     def _wait_for_pending_tools_list(self) -> None:
-        deadline = time.monotonic() + SCHEMA_WAIT_SECONDS
-        with self._schema_ready:
-            while self._pending_tools_list:
+        self._wait_until(lambda: not self._pending_tools_list, SCHEMA_WAIT_SECONDS)
+
+    def _wait_for_pending_responses(self) -> None:
+        self._wait_until(lambda: not self._pending, RESPONSE_WAIT_SECONDS)
+
+    def _wait_until(self, condition, timeout: float) -> None:
+        """Blocks the client->server thread until `condition()` holds
+        (checked under the pending lock, woken by the server->client
+        thread) or `timeout` elapses."""
+        deadline = time.monotonic() + timeout
+        with self._pending_changed:
+            while not condition():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return
-                self._schema_ready.wait(remaining)
+                self._pending_changed.wait(remaining)
 
     def _reject(self, request_id, reason: str) -> None:
         self.stdout.write(json.dumps(self._error_response(request_id, reason)) + "\n")
@@ -321,23 +344,46 @@ class MCPProxy:
             return line
 
         message_id = message.get("id")
-        with self._schema_ready:
+        with self._pending_changed:
             is_tools_list = message_id in self._pending_tools_list
             if is_tools_list:
                 result = message.get("result")
                 if isinstance(result, dict):
                     self.session.register_tools(result.get("tools"))
                 self._pending_tools_list.discard(message_id)
-                self._schema_ready.notify_all()
+                self._pending_changed.notify_all()
         if is_tools_list:
             return line
 
-        if not self._output_inspection_enabled():
+        if not self._inspects_responses():
             return line
 
-        with self._pending_lock:
-            pending = self._pending.pop(message_id, None)
-        if pending is None or "result" not in message:
+        with self._pending_changed:
+            pending = self._pending.get(message_id)
+            if pending is None:
+                return line
+            # Size first: a result over the per-call budget is withheld
+            # before anything bothers to scan it, and only delivered
+            # bytes count toward the session total. Counted before the
+            # request is dropped from pending, so a call waiting on
+            # _wait_for_pending_responses sees the new total.
+            over = None
+            nbytes = 0
+            if "result" in message:
+                nbytes = len(json.dumps(message["result"]).encode("utf-8"))
+                over = self.policy.output_budget_exceeded(nbytes)
+                if over is None:
+                    self.session.note_output(nbytes)
+            del self._pending[message_id]
+            self._pending_changed.notify_all()
+
+        if "result" not in message:
+            return line
+        if over is not None:
+            self.audit.record_budget_block(pending.name, pending.method, "max_output_bytes_per_call", nbytes)
+            return json.dumps(self._withheld_response(message, pending.method, over)) + "\n"
+
+        if not self._output_inspection_enabled():
             return line
 
         # Slots point into the message; work on a copy so a blocked or
@@ -350,7 +396,11 @@ class MCPProxy:
         injection_rules = self._check_injection(slots)
         if injection_rules:
             self.audit.record_injection_block(pending.name, injection_rules, pending.method)
-            return json.dumps(self._blocked_response(message, pending.method, injection_rules)) + "\n"
+            reason = (
+                "this tool output was blocked — suspected prompt injection "
+                f"(matched rules: {', '.join(injection_rules)})"
+            )
+            return json.dumps(self._withheld_response(message, pending.method, reason)) + "\n"
 
         redaction_rules = self._redact(slots)
         if not redaction_rules:
@@ -367,11 +417,9 @@ class MCPProxy:
             matched_rules.extend(self.injection_detector.scan(slot.text))
         return sorted(set(matched_rules))
 
-    def _blocked_response(self, message: dict, method: str, matched_rules: List[str]) -> dict:
-        reason = (
-            "this tool output was blocked — suspected prompt injection "
-            f"(matched rules: {', '.join(matched_rules)})"
-        )
+    def _withheld_response(self, message: dict, method: str, reason: str) -> dict:
+        """The response the agent gets instead of a result AgentGuard
+        refused to deliver."""
         if method == "tools/call":
             # A tool-level error, which is how MCP says a tool reports
             # failure; the agent sees a normal result shape with isError.

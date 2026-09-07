@@ -45,6 +45,12 @@ UNCLASSIFIED = "unclassified"
 UNCLASSIFIED_ALLOW = "allow"
 UNCLASSIFIED_DENY = "deny"
 
+BUDGET_KEY_FOR_CATEGORY = {
+    FILE_ACCESS: "max_file_calls",
+    NETWORK: "max_network_calls",
+    COMMAND_EXEC: "max_command_calls",
+}
+
 
 @dataclass
 class ClassifiedArgument:
@@ -138,6 +144,9 @@ class PolicyEngine:
         # schemas the classifier can't read. Check with
         # `agentguard check-policy --probe` before flipping it.
         self.unclassified_arguments = config.get("unclassified_arguments", UNCLASSIFIED_ALLOW)
+        # Per-session ceilings; the Session holds the counters. A missing
+        # key means unlimited.
+        self.budgets: dict = dict(config.get("budgets") or {})
         # Shared with the proxy, which feeds it `tools/list` schemas as
         # they go by. Without any registered schema it classifies by key
         # name alone, which is the v1 behavior.
@@ -146,6 +155,38 @@ class PolicyEngine:
     @classmethod
     def from_yaml(cls, path: str) -> "PolicyEngine":
         return cls(load_policy(path))
+
+    @property
+    def tracks_output_size(self) -> bool:
+        return "max_output_bytes_per_call" in self.budgets or "max_total_output_bytes" in self.budgets
+
+    def output_budget_exceeded(self, nbytes: int) -> Optional[str]:
+        """Reason a single result of `nbytes` breaks the per-call budget,
+        or None."""
+        limit = self.budgets.get("max_output_bytes_per_call")
+        if limit is not None and nbytes > limit:
+            return f"result is {nbytes} bytes, over the session budget max_output_bytes_per_call ({limit})"
+        return None
+
+    def _session_budget_exceeded(self, session, categories: List[str]) -> Optional[Decision]:
+        limit = self.budgets.get("max_total_output_bytes")
+        if limit is not None and session.output_bytes >= limit:
+            return Decision(
+                False, "budget",
+                f"session budget max_total_output_bytes exhausted "
+                f"({session.output_bytes} of {limit} bytes already delivered)",
+                "max_total_output_bytes",
+            )
+        for category in categories:
+            key = BUDGET_KEY_FOR_CATEGORY[category]
+            limit = self.budgets.get(key)
+            if limit is not None and session.call_counts.get(category, 0) >= limit:
+                return Decision(
+                    False, "budget",
+                    f"session budget {key} exhausted ({limit} {category} calls already allowed)",
+                    key,
+                )
+        return None
 
     @staticmethod
     def _load_category(raw: dict) -> _CategoryRule:
@@ -184,15 +225,21 @@ class PolicyEngine:
             classified.append(ClassifiedArgument(key, value, category, source))
         return classified
 
-    def evaluate(self, tool_name: str, arguments: dict) -> Decision:
+    def evaluate(self, tool_name: str, arguments: dict, session=None) -> Decision:
+        """Judges one call. With a `session`, the cross-call rules —
+        budgets — apply too; without one (check-policy --probe) the
+        call is judged on its own, as v1 did."""
         classified = self.classify_arguments(tool_name, arguments)
         checked_categories: List[str] = []
+        touched_categories: List[str] = []
         unclassified_keys: List[str] = []
         for arg in classified:
             if arg.category is None:
                 if arg.key not in unclassified_keys:
                     unclassified_keys.append(arg.key)
                 continue
+            if arg.category not in touched_categories:
+                touched_categories.append(arg.category)
             rule = self._rule_for(arg.category)
             if not rule.enabled:
                 continue
@@ -210,6 +257,11 @@ class PolicyEngine:
                 "could not be classified and unclassified_arguments is 'deny'",
                 arguments=classified,
             )
+        if session is not None:
+            decision = self._session_budget_exceeded(session, touched_categories)
+            if decision is not None:
+                decision.arguments = classified
+                return decision
         if checked_categories:
             return Decision(
                 allowed=True,

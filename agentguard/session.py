@@ -54,6 +54,21 @@ class Session:
     policy_sha256: Optional[str] = None
     # name -> the tool entry exactly as the server declared it.
     tools: Dict[str, dict] = field(default_factory=dict)
+    # Budget counters: allowed calls per category, and output bytes the
+    # agent has actually been handed. Only calls that were forwarded
+    # count — a denied call consumed nothing.
+    call_counts: Dict[str, int] = field(default_factory=dict)
+    output_bytes: int = 0
+
+    def note_allowed_call(self, decision) -> None:
+        """Called by the proxy when a call is forwarded. One increment
+        per category the call touched, however many arguments fell in
+        it — a `read_many(paths=[...])` is one file call."""
+        for category in sorted({a.category for a in decision.arguments if a.category}):
+            self.call_counts[category] = self.call_counts.get(category, 0) + 1
+
+    def note_output(self, nbytes: int) -> None:
+        self.output_bytes += nbytes
 
     @classmethod
     def new(
