@@ -112,6 +112,27 @@ then `allow_patterns` with `default_action` (a value matching no allow
 pattern is denied when `default_action: deny`). Only the pattern
 language differs — globs for paths and hostnames, regexes for commands.
 
+### Per-tool scoping
+
+A `tools:` section overrides the global rules for one tool at a time.
+Each *field* an override sets replaces the global one; everything else
+is inherited — so "the fetch tool may only hit `api.github.com`" is
+one line and still gets the global deny patterns:
+
+```yaml
+tools:
+  fetch_url:
+    network:
+      allow_patterns: ["api.github.com"]   # inherits default_action: deny
+  read_file:
+    file_access:
+      allow_patterns: ["/project/**"]
+      default_action: deny
+    unclassified_arguments: deny
+  run_command:
+    enabled: false                          # every call to it is denied
+```
+
 ### Session budgets
 
 Every proxy run is a *session* (it gets an id, and every audit entry

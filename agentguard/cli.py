@@ -133,6 +133,26 @@ def _print_effective_policy(path: str, config: dict, out) -> None:
         if allow and default_action == "allow":
             print("  note: allow_patterns has no effect while default_action is 'allow'", file=out)
 
+    overrides = config.get("tools") or {}
+    if overrides:
+        print(f"tools: {len(overrides)} override(s)", file=out)
+        for tool_name, override in overrides.items():
+            override = override or {}
+            if override.get("enabled") is False:
+                print(f"  {tool_name}: DISABLED", file=out)
+                continue
+            parts = []
+            for key, value in override.items():
+                if isinstance(value, dict):
+                    parts.extend(f"{key}.{k}={v!r}" for k, v in value.items())
+                else:
+                    parts.append(f"{key}={value!r}")
+            print(f"  {tool_name}: {', '.join(parts)}", file=out)
+
+    budgets = config.get("budgets") or {}
+    if budgets:
+        print("budgets: " + ", ".join(f"{k}={v}" for k, v in budgets.items()), file=out)
+
     for section_name in ("redaction", "injection_detection"):
         section = config.get(section_name) or {}
         enabled = section.get("enabled", True)

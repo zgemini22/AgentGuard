@@ -51,6 +51,25 @@ network:
     - "*.example.com"
   default_action: deny
 
+# Per-tool overrides. A tool's effective rules are the global sections
+# above with each *field* set here replaced — `tools.fetch.network.
+# allow_patterns` narrows the allowlist for that one tool and inherits
+# everything else (deny_patterns, default_action) from the global
+# network section. `enabled: false` switches a tool off entirely;
+# `unclassified_arguments` can be set per tool. Commented out because
+# tool names are server-specific.
+# tools:
+#   fetch_url:
+#     network:
+#       allow_patterns: ["api.github.com"]
+#   run_command:
+#     enabled: false
+#   read_file:
+#     file_access:
+#       allow_patterns: ["/project/**"]
+#       default_action: deny
+#     unclassified_arguments: deny
+
 # Session budgets: ceilings a single proxy run can't exceed however each
 # individual call looks. The cheap, deterministic answer to incremental
 # exfiltration ("read one more file, then one more...") and to a tool

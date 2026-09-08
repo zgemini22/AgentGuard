@@ -87,6 +87,15 @@ class _CategoryRule:
     default_action: str = "allow"  # what happens to a value on no allow pattern; only matters when allow_patterns is set
 
 
+@dataclass
+class _ToolRules:
+    """The effective rule set for one tool name (see rules_for_tool)."""
+    enabled: bool
+    categories: dict  # category -> _CategoryRule
+    unclassified_arguments: str
+    overridden: bool  # whether a tools.<name> section exists for it
+
+
 def file_uri_path(value: str) -> Optional[str]:
     """`file:///home/u/x` -> `/home/u/x`; `file:///C:/x` -> `C:/x`. None
     for anything that isn't a file URI."""
@@ -134,9 +143,11 @@ class PolicyEngine:
         if errors:
             raise PolicyError(errors)
         self.config = config
-        self._file_rule = self._load_category(config.get("file_access", {}))
-        self._command_rule = self._load_category(config.get("command_exec", {}))
-        self._network_rule = self._load_category(config.get("network", {}))
+        self._global_rules = {
+            FILE_ACCESS: self._load_category(config.get("file_access", {})),
+            COMMAND_EXEC: self._load_category(config.get("command_exec", {})),
+            NETWORK: self._load_category(config.get("network", {})),
+        }
         # What to do with a string argument no classifier rule recognized.
         # `allow` is the v1 behavior and the default for compatibility;
         # `deny` is the secure setting — it closes the rename-the-argument
@@ -144,6 +155,14 @@ class PolicyEngine:
         # schemas the classifier can't read. Check with
         # `agentguard check-policy --probe` before flipping it.
         self.unclassified_arguments = config.get("unclassified_arguments", UNCLASSIFIED_ALLOW)
+        # `tools.<name>:` overrides. A tool's effective rules are the
+        # global ones with each *field* the override sets replaced —
+        # `tools.fetch.network.allow_patterns` swaps the allowlist for
+        # that tool but leaves its deny_patterns and default_action as
+        # the global network section has them. Resolved lazily, once
+        # per tool name.
+        self._tool_overrides: dict = dict(config.get("tools") or {})
+        self._tool_rules_cache: dict = {}
         # Per-session ceilings; the Session holds the counters. A missing
         # key means unlimited.
         self.budgets: dict = dict(config.get("budgets") or {})
@@ -198,12 +217,33 @@ class PolicyEngine:
             default_action=raw.get("default_action", "allow"),
         )
 
-    def _rule_for(self, category: str) -> _CategoryRule:
-        return {
-            FILE_ACCESS: self._file_rule,
-            COMMAND_EXEC: self._command_rule,
-            NETWORK: self._network_rule,
-        }[category]
+    def rules_for_tool(self, tool_name: str) -> "_ToolRules":
+        """The effective rules for one tool: global, with that tool's
+        override fields applied on top."""
+        cached = self._tool_rules_cache.get(tool_name)
+        if cached is not None:
+            return cached
+        override = self._tool_overrides.get(tool_name) or {}
+        categories = {}
+        for category, base in self._global_rules.items():
+            section = override.get(category)
+            if section:
+                categories[category] = _CategoryRule(
+                    enabled=section.get("enabled", base.enabled),
+                    deny_patterns=(section.get("deny_patterns") if "deny_patterns" in section else base.deny_patterns) or [],
+                    allow_patterns=(section.get("allow_patterns") if "allow_patterns" in section else base.allow_patterns) or [],
+                    default_action=section.get("default_action", base.default_action),
+                )
+            else:
+                categories[category] = base
+        rules = _ToolRules(
+            enabled=override.get("enabled", True),
+            categories=categories,
+            unclassified_arguments=override.get("unclassified_arguments", self.unclassified_arguments),
+            overridden=bool(override),
+        )
+        self._tool_rules_cache[tool_name] = rules
+        return rules
 
     def classify_arguments(self, tool_name: str, arguments: dict) -> List[ClassifiedArgument]:
         classified = []
@@ -230,6 +270,14 @@ class PolicyEngine:
         budgets — apply too; without one (check-policy --probe) the
         call is judged on its own, as v1 did."""
         classified = self.classify_arguments(tool_name, arguments)
+        rules = self.rules_for_tool(tool_name)
+        if not rules.enabled:
+            return Decision(
+                False, "tool",
+                f"tool '{tool_name}' is disabled by policy (tools.{tool_name}.enabled: false)",
+                f"tools.{tool_name}.enabled",
+                arguments=classified,
+            )
         checked_categories: List[str] = []
         touched_categories: List[str] = []
         unclassified_keys: List[str] = []
@@ -240,7 +288,7 @@ class PolicyEngine:
                 continue
             if arg.category not in touched_categories:
                 touched_categories.append(arg.category)
-            rule = self._rule_for(arg.category)
+            rule = rules.categories[arg.category]
             if not rule.enabled:
                 continue
             if arg.category not in checked_categories:
@@ -248,9 +296,11 @@ class PolicyEngine:
             decision = self._check(arg.category, arg.value, rule)
             if decision is not None:
                 decision.arguments = classified
+                if rules.overridden:
+                    decision.reason += f" (under tools.{tool_name} override)"
                 return decision
 
-        if unclassified_keys and self.unclassified_arguments == UNCLASSIFIED_DENY:
+        if unclassified_keys and rules.unclassified_arguments == UNCLASSIFIED_DENY:
             return Decision(
                 False, UNCLASSIFIED,
                 f"tool '{tool_name}' argument(s) {', '.join(repr(k) for k in unclassified_keys)} "

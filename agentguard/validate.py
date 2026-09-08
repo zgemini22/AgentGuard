@@ -100,6 +100,22 @@ def _mapping(keys: Dict[str, Check], *, required: tuple = ()) -> Check:
     return check
 
 
+def _map_of(value_check: Check) -> Check:
+    """A dict with arbitrary (non-empty string) keys, each value checked."""
+    def check(value, where, errors):
+        if value is None:
+            return
+        if not isinstance(value, dict):
+            errors.append(f"{where}: expected a mapping, got {type(value).__name__}")
+            return
+        for key, val in value.items():
+            if not isinstance(key, str) or not key:
+                errors.append(f"{where}: keys must be non-empty strings, got {key!r}")
+                continue
+            value_check(val, f"{where}.{key}", errors)
+    return check
+
+
 def _closest(key: str, candidates) -> Optional[str]:
     """Cheap typo hint: the candidate sharing the longest common prefix
     with `key`, if that prefix is most of the key."""
@@ -150,11 +166,23 @@ BUDGET_KEYS = (
     "max_total_output_bytes",
 )
 
+# What a `tools.<name>:` override may contain: the same three category
+# sections and unclassified_arguments as the top level, plus `enabled`
+# to switch a tool off entirely.
+TOOL_OVERRIDE_SCHEMA: Dict[str, Check] = {
+    "enabled": _is_bool,
+    "unclassified_arguments": _is_action,
+    "file_access": _category(_is_str),
+    "command_exec": _category(_is_regex),
+    "network": _category(_is_str),
+}
+
 POLICY_SCHEMA: Dict[str, Check] = {
     "unclassified_arguments": _is_action,
     "file_access": _category(_is_str),
     "command_exec": _category(_is_regex),
     "network": _category(_is_str),
+    "tools": _map_of(_mapping(TOOL_OVERRIDE_SCHEMA)),
     "budgets": _mapping({key: _is_positive_int for key in BUDGET_KEYS}),
     "redaction": _rules_section(),
     "injection_detection": _rules_section(),
