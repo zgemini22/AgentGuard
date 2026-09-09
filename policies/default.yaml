@@ -87,6 +87,27 @@ network:
 #   max_output_bytes_per_call: 2000000
 #   max_total_output_bytes: 50000000
 
+# Sequence rules: the three cross-call questions a session can answer.
+# Exactly three, by design — each is a named pattern with fixed
+# semantics, not a rule language.
+#   deny_network_after_sensitive_read — once a file matching a
+#     sensitive pattern has been read (allowed, not denied — deny
+#     patterns never let it through), no network call goes out for the
+#     rest of the session. Omit sensitive_patterns to use the built-in
+#     list (agentguard.policy.DEFAULT_SENSITIVE_PATTERNS: .env, key and
+#     certificate files, cloud/SSH credential directories, ...).
+#   max_distinct_directories — a ceiling on how many different parent
+#     directories a session's file calls may touch.
+#   deny_exec_after_fetch — once any network call has gone through, no
+#     command runs for the rest of the session.
+# Commented out because they change what a working session may do;
+# the first one is the safest to turn on.
+# sequences:
+#   deny_network_after_sensitive_read:
+#     enabled: true
+#   max_distinct_directories: 20
+#   deny_exec_after_fetch: false
+
 # Redaction runs on tool *output*, after a call has already been allowed
 # through by the rules above — a call can be legitimate and still return
 # something (a checked-in .env dump, a token embedded in an API

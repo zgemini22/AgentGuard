@@ -153,6 +153,25 @@ budgets:
 Only forwarded calls and delivered bytes count; a denied call consumed
 nothing. Every key is optional and unset means unlimited.
 
+### Sequence rules
+
+"Read `.env`, then POST somewhere" is two individually-fine calls. A
+`sequences:` section adds exactly three cross-call rules — named
+patterns with fixed meaning, deliberately not a rule language:
+
+```yaml
+sequences:
+  deny_network_after_sensitive_read:   # after an allowed read of a sensitive file,
+    enabled: true                      # no network call for the rest of the session
+    sensitive_patterns: ["**/.env", "**/*.pem"]   # omit for the built-in list
+  max_distinct_directories: 20         # ceiling on parent directories touched
+  deny_exec_after_fetch: true          # after any network call, no commands
+```
+
+A denial names the rule and what tripped it (`network call after a
+sensitive file read ('/app/.env') in this session`). These are the only
+three; a fourth is a design conversation, not a config key.
+
 ### Validation and `check-policy`
 
 The policy file is validated strictly when loaded: an unknown key

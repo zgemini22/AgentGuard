@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterator, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
+from .session import parent_directory
 from .validate import PolicyError, load_policy, validate_policy  # noqa: F401
 from .classify import (  # noqa: F401  (re-exported for backward compatibility)
     COMMAND_ARG_KEYS,
@@ -50,6 +51,19 @@ BUDGET_KEY_FOR_CATEGORY = {
     NETWORK: "max_network_calls",
     COMMAND_EXEC: "max_command_calls",
 }
+
+# What `deny_network_after_sensitive_read` treats as sensitive when the
+# policy doesn't say. These are files a session may legitimately be
+# *allowed* to read (a deny pattern would never let them through) whose
+# contents shouldn't then leave the machine.
+DEFAULT_SENSITIVE_PATTERNS = [
+    "**/.env", "**/.env.*",
+    "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx",
+    "**/.ssh/**", "**/.aws/**", "**/.gnupg/**", "**/.kube/**",
+    "**/id_rsa*", "**/id_ed25519*", "**/id_ecdsa*",
+    "**/credentials", "**/credentials.*", "**/secrets.*", "**/*secret*",
+    "**/.netrc", "**/.npmrc", "**/.pypirc", "**/.docker/config.json",
+]
 
 
 @dataclass
@@ -166,6 +180,15 @@ class PolicyEngine:
         # Per-session ceilings; the Session holds the counters. A missing
         # key means unlimited.
         self.budgets: dict = dict(config.get("budgets") or {})
+        # The three cross-call rules. See _check_sequences.
+        sequences = config.get("sequences") or {}
+        sensitive = sequences.get("deny_network_after_sensitive_read")
+        self.deny_network_after_sensitive_read = sensitive is not None and sensitive.get("enabled", True)
+        self.sensitive_patterns: List[str] = list(
+            (sensitive or {}).get("sensitive_patterns") or DEFAULT_SENSITIVE_PATTERNS
+        )
+        self.max_distinct_directories: Optional[int] = sequences.get("max_distinct_directories")
+        self.deny_exec_after_fetch: bool = bool(sequences.get("deny_exec_after_fetch", False))
         # Shared with the proxy, which feeds it `tools/list` schemas as
         # they go by. Without any registered schema it classifies by key
         # name alone, which is the v1 behavior.
@@ -206,6 +229,43 @@ class PolicyEngine:
                     key,
                 )
         return None
+
+    def _check_sequences(self, session, classified: List[ClassifiedArgument], touched: List[str]) -> Optional[Decision]:
+        """The three cross-call rules, judged against what this session
+        has already been allowed to do. Deliberately a fixed menu: each
+        answers one concrete question the threat model used to disclaim.
+        A fourth is a design conversation, not another elif."""
+        if self.deny_network_after_sensitive_read and NETWORK in touched and session.sensitive_reads:
+            return Decision(
+                False, "sequence",
+                f"network call after a sensitive file read ('{session.sensitive_reads[0]}'"
+                + (f" and {len(session.sensitive_reads) - 1} more" if len(session.sensitive_reads) > 1 else "")
+                + ") in this session",
+                "deny_network_after_sensitive_read",
+            )
+        if self.deny_exec_after_fetch and COMMAND_EXEC in touched and session.fetched:
+            return Decision(
+                False, "sequence",
+                "command execution after a network call in this session",
+                "deny_exec_after_fetch",
+            )
+        if self.max_distinct_directories is not None and FILE_ACCESS in touched:
+            new_dirs = {parent_directory(a.value) for a in classified if a.category == FILE_ACCESS}
+            new_dirs -= session.directories
+            total = len(session.directories) + len(new_dirs)
+            if total > self.max_distinct_directories:
+                return Decision(
+                    False, "sequence",
+                    f"call would touch {total} distinct directories ('{sorted(new_dirs)[0]}' is new); "
+                    f"max_distinct_directories is {self.max_distinct_directories}",
+                    "max_distinct_directories",
+                )
+        return None
+
+    def note_allowed(self, session, decision: Decision) -> None:
+        """Records a forwarded call on the session — budget counters and
+        the sequence facts — using this policy's notion of "sensitive"."""
+        session.note_allowed_call(decision, self.sensitive_patterns)
 
     @staticmethod
     def _load_category(raw: dict) -> _CategoryRule:
@@ -308,7 +368,10 @@ class PolicyEngine:
                 arguments=classified,
             )
         if session is not None:
-            decision = self._session_budget_exceeded(session, touched_categories)
+            decision = (
+                self._session_budget_exceeded(session, touched_categories)
+                or self._check_sequences(session, classified, touched_categories)
+            )
             if decision is not None:
                 decision.arguments = classified
                 return decision

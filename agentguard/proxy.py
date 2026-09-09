@@ -279,7 +279,7 @@ class MCPProxy:
         self.audit.record(name, arguments, decision)
 
         if decision.allowed:
-            self.session.note_allowed_call(decision)
+            self.policy.note_allowed(self.session, decision)
             self._track(request_id, method, name if method == "tools/call" else str(arguments["uri"]))
             return line
 

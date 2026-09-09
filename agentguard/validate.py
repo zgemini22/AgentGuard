@@ -177,6 +177,17 @@ TOOL_OVERRIDE_SCHEMA: Dict[str, Check] = {
     "network": _category(_is_str),
 }
 
+# Exactly three named cross-call patterns. This is a fixed menu on
+# purpose — see agentguard/session.py — not the seed of a rule DSL.
+SEQUENCE_SCHEMA: Dict[str, Check] = {
+    "deny_network_after_sensitive_read": _mapping({
+        "enabled": _is_bool,
+        "sensitive_patterns": _list_of(_is_str),
+    }),
+    "max_distinct_directories": _is_positive_int,
+    "deny_exec_after_fetch": _is_bool,
+}
+
 POLICY_SCHEMA: Dict[str, Check] = {
     "unclassified_arguments": _is_action,
     "file_access": _category(_is_str),
@@ -184,6 +195,7 @@ POLICY_SCHEMA: Dict[str, Check] = {
     "network": _category(_is_str),
     "tools": _map_of(_mapping(TOOL_OVERRIDE_SCHEMA)),
     "budgets": _mapping({key: _is_positive_int for key in BUDGET_KEYS}),
+    "sequences": _mapping(SEQUENCE_SCHEMA),
     "redaction": _rules_section(),
     "injection_detection": _rules_section(),
 }

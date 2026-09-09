@@ -25,15 +25,17 @@ what's happened so far, is this call still allowed?"
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
+import os
 import platform
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Set
 
 from . import __version__
-from .classify import ArgumentClassifier
+from .classify import FILE_ACCESS, NETWORK, ArgumentClassifier
 
 
 def file_sha256(path: str) -> Optional[str]:
@@ -59,13 +61,32 @@ class Session:
     # count — a denied call consumed nothing.
     call_counts: Dict[str, int] = field(default_factory=dict)
     output_bytes: int = 0
+    # Sequence-rule state, also fed only by forwarded calls:
+    #   sensitive_reads — file paths matched a `sensitive_patterns` glob
+    #   directories     — parent directory of every file path touched
+    #   fetched         — any network call has gone through
+    # These three facts are the whole cross-call memory. They exist to
+    # answer three specific questions (see PolicyEngine._check_sequences),
+    # not to be a general event log — the audit log is that.
+    sensitive_reads: List[str] = field(default_factory=list)
+    directories: Set[str] = field(default_factory=set)
+    fetched: bool = False
 
-    def note_allowed_call(self, decision) -> None:
-        """Called by the proxy when a call is forwarded. One increment
-        per category the call touched, however many arguments fell in
-        it — a `read_many(paths=[...])` is one file call."""
+    def note_allowed_call(self, decision, sensitive_patterns: Sequence[str] = ()) -> None:
+        """Called when a call is forwarded. One budget increment per
+        category the call touched, however many arguments fell in it —
+        a `read_many(paths=[...])` is one file call — plus the sequence
+        facts above."""
         for category in sorted({a.category for a in decision.arguments if a.category}):
             self.call_counts[category] = self.call_counts.get(category, 0) + 1
+        for arg in decision.arguments:
+            if arg.category == FILE_ACCESS:
+                self.directories.add(parent_directory(arg.value))
+                if any(fnmatch.fnmatch(os.path.expanduser(arg.value), os.path.expanduser(p))
+                       for p in sensitive_patterns):
+                    self.sensitive_reads.append(arg.value)
+            elif arg.category == NETWORK:
+                self.fetched = True
 
     def note_output(self, nbytes: int) -> None:
         self.output_bytes += nbytes
@@ -113,3 +134,10 @@ class Session:
             "duration_seconds": round(time.time() - self.started_at, 3),
             "tools_seen": sorted(self.tools),
         }
+
+
+def parent_directory(path: str) -> str:
+    """The directory a file path lives in, normalized so `/a/./b/x` and
+    `/a/b/x` count as the same one. A bare filename lives in `.`."""
+    normalized = os.path.normpath(os.path.expanduser(path))
+    return os.path.dirname(normalized) or "."
