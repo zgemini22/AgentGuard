@@ -5,6 +5,7 @@
                             [--tools tools-list.json]
                             [--probe TOOL '{"arg": "value"}']
     agentguard verify-audit <audit-log-path>
+    agentguard report <audit-log-path> [--session ID] [--json]
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from .injection import InjectionDetector
 from .policy import PolicyEngine
 from .proxy import MCPProxy
 from .redact import SecretRedactor
+from .report import build_report, render_text
 from .session import Session
 from .validate import PolicyError, load_policy
 
@@ -68,6 +70,14 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-audit", help="Verify a hash-chained audit log for tampering"
     )
     verify_parser.add_argument("audit_log", help="Path to the audit log file to verify")
+
+    report_parser = subparsers.add_parser(
+        "report",
+        help="What did the agent touch? Files, hosts, commands, blocks, redactions — per session, from the audit log",
+    )
+    report_parser.add_argument("audit_log", help="Path to the audit log file to report on")
+    report_parser.add_argument("--session", metavar="ID", help="Only the session whose id starts with ID")
+    report_parser.add_argument("--json", action="store_true", help="Machine-readable output")
 
     return parser
 
@@ -225,6 +235,15 @@ def _verify_audit(args: argparse.Namespace) -> int:
     return 1
 
 
+def _report(args: argparse.Namespace) -> int:
+    report = build_report(args.audit_log, args.session)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        sys.stdout.write(render_text(report))
+    return 0 if report["chain"]["valid"] else 1
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -235,6 +254,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _check_policy(args, parser)
     if args.command == "verify-audit":
         return _verify_audit(args)
+    if args.command == "report":
+        return _report(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

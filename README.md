@@ -248,6 +248,25 @@ chain from scratch. Actual tamper-proofing would mean periodically
 publishing the chain's head hash somewhere outside the attacker's
 reach — out of scope for v1.
 
+## What did the agent touch?
+
+The hash chain answers "was this log edited?" — but the question that
+started this project was "the agent ran for twenty minutes and I have
+no record of what it did." That one is:
+
+```bash
+agentguard report agentguard_audit.log
+```
+
+It verifies the chain first (and says `TAMPERED` up front if it isn't
+intact), then prints each session: the wrapped server and the policy
+in force (by content hash), files touched grouped by directory with
+blocked attempts flagged and the reason, hosts contacted, commands run,
+every block / redaction / injection hit / withheld result / content
+the scanners couldn't read, budget consumption, and a timeline.
+`--session <id-prefix>` narrows to one run; `--json` gives the same
+data to a machine. Text and JSON are the only two outputs, on purpose.
+
 ## 5-minute quickstart
 
 **1. Install.** Published on PyPI as
