@@ -26,7 +26,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
-ACTIONS = ("allow", "deny")
+ACTIONS = ("allow", "deny", "ask")
+# Where an `ask` makes no sense (a budget or sequence rule has already
+# said "not by default"), the choice is only deny-or-ask.
+TRIP_ACTIONS = ("deny", "ask")
 
 
 class PolicyError(ValueError):
@@ -51,6 +54,10 @@ def _is_str(value, where, errors):
 def _is_action(value, where, errors, allowed=ACTIONS):
     if value not in allowed:
         errors.append(f"{where}: expected one of {', '.join(allowed)}, got {value!r}")
+
+
+def _is_trip_action(value, where, errors):
+    _is_action(value, where, errors, TRIP_ACTIONS)
 
 
 def _is_regex(value, where, errors):
@@ -140,10 +147,22 @@ def _named_rule(pattern_check: Check) -> Check:
     return _mapping({"name": _is_str, "pattern": pattern_check}, required=("name", "pattern"))
 
 
+def _deny_entry(pattern_check: Check) -> Check:
+    """A deny_patterns item: a bare pattern, or {pattern, action: deny|ask}."""
+    as_mapping = _mapping({"pattern": pattern_check, "action": _is_trip_action}, required=("pattern",))
+
+    def check(value, where, errors):
+        if isinstance(value, dict):
+            as_mapping(value, where, errors)
+        else:
+            pattern_check(value, where, errors)
+    return check
+
+
 def _category(pattern_check: Check) -> Check:
     return _mapping({
         "enabled": _is_bool,
-        "deny_patterns": _list_of(pattern_check),
+        "deny_patterns": _list_of(_deny_entry(pattern_check)),
         "allow_patterns": _list_of(pattern_check),
         "default_action": _is_action,
     })
@@ -194,8 +213,8 @@ POLICY_SCHEMA: Dict[str, Check] = {
     "command_exec": _category(_is_regex),
     "network": _category(_is_str),
     "tools": _map_of(_mapping(TOOL_OVERRIDE_SCHEMA)),
-    "budgets": _mapping({key: _is_positive_int for key in BUDGET_KEYS}),
-    "sequences": _mapping(SEQUENCE_SCHEMA),
+    "budgets": _mapping({**{key: _is_positive_int for key in BUDGET_KEYS}, "on_exceed": _is_trip_action}),
+    "sequences": _mapping({**SEQUENCE_SCHEMA, "on_trip": _is_trip_action}),
     "redaction": _rules_section(),
     "injection_detection": _rules_section(),
 }

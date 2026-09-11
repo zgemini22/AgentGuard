@@ -138,6 +138,12 @@ class AuditLog:
             # looked at, not just what it concluded.
             "argument_categories": decision.argument_categories,
             "allowed": decision.allowed,
+            # `action` is the effective verdict; `ask_resolution` is set
+            # when the policy said "ask" and records how that was
+            # settled (approved/denied by the operator, timed out, no
+            # channel configured, ...).
+            "action": decision.action,
+            "ask_resolution": decision.ask_resolution,
             "category": decision.category,
             "reason": decision.reason,
             "matched_rule": decision.matched_rule,

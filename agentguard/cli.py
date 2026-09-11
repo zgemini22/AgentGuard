@@ -31,6 +31,7 @@ from .validate import PolicyError, load_policy
 # Distinct from 1 (invalid policy) and 2 (usage error) so scripts can
 # tell "your policy is broken" from "your policy said no".
 PROBE_DENIED_EXIT = 3
+PROBE_ASK_EXIT = 4
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -219,10 +220,13 @@ def _check_policy(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     for arg in decision.arguments:
         category = arg.category or "UNCLASSIFIED"
         print(f"  {arg.key} = {arg.value!r}  ->  {category} ({arg.source})")
-    verdict = "ALLOW" if decision.allowed else "DENY"
+    verdict = decision.action.upper()
     rule = f"  matched_rule={decision.matched_rule}" if decision.matched_rule else ""
     print(f"decision: {verdict}  category={decision.category}{rule}")
     print(f"reason: {decision.reason}")
+    if decision.action == "ask":
+        print("note: ASK needs an approval channel at runtime (approval_socket); without one it is denied")
+        return PROBE_ASK_EXIT
     return 0 if decision.allowed else PROBE_DENIED_EXIT
 
 

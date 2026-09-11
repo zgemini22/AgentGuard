@@ -45,7 +45,7 @@ from typing import IO, Dict, List, Optional, Tuple
 
 from .audit import AuditLog
 from .injection import InjectionDetector
-from .policy import PolicyEngine
+from .policy import ASK, Decision, PolicyEngine
 from .redact import SecretRedactor
 from .session import Session
 
@@ -169,6 +169,7 @@ class MCPProxy:
         stdout: IO[str] = sys.stdout,
         stderr: IO[str] = sys.stderr,
         session: Optional[Session] = None,
+        approver=None,
     ):
         self.server_cmd = server_cmd
         self.policy = policy
@@ -178,6 +179,10 @@ class MCPProxy:
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
+        # Whatever resolves `ask` verdicts — anything with
+        # ask(session, name, arguments, decision) -> Decision. None means
+        # there is no human to ask and every ask degrades to deny.
+        self.approver = approver
         # The session wraps the policy engine's classifier so tools/list
         # feeds both the inventory and the schema cache in one call.
         self.session = session if session is not None else Session.new(server_cmd, policy.classifier)
@@ -276,6 +281,8 @@ class MCPProxy:
             self._wait_for_pending_responses()
 
         decision = self.policy.evaluate(name, arguments, self.session)
+        if decision.action == ASK:
+            decision = self._resolve_ask(name, arguments, decision)
         self.audit.record(name, arguments, decision)
 
         if decision.allowed:
@@ -285,6 +292,14 @@ class MCPProxy:
 
         self._reject(request_id, decision.reason)
         return None
+
+    def _resolve_ask(self, name: str, arguments: dict, decision: Decision) -> Decision:
+        """Turns an `ask` verdict into allow or deny. With no approval
+        channel there is nobody to ask, so the answer is deny — and the
+        audit entry says that's why, rather than pretending a rule did."""
+        if self.approver is None:
+            return decision.resolved(False, "no_channel", "ask: no approval channel configured, denied")
+        return self.approver.ask(self.session, name, arguments, decision)
 
     def _inspects_responses(self) -> bool:
         return self._output_inspection_enabled() or self.policy.tracks_output_size

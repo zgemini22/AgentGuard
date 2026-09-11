@@ -43,8 +43,6 @@ from .classify import (  # noqa: F401  (re-exported for backward compatibility)
 # classify) because they mean different things to a reader of the log:
 # "none" is inert, "unclassified" is a gap the policy couldn't see into.
 UNCLASSIFIED = "unclassified"
-UNCLASSIFIED_ALLOW = "allow"
-UNCLASSIFIED_DENY = "deny"
 
 BUDGET_KEY_FOR_CATEGORY = {
     FILE_ACCESS: "max_file_calls",
@@ -76,13 +74,45 @@ class ClassifiedArgument:
     source: str
 
 
+ALLOW = "allow"
+DENY = "deny"
+ASK = "ask"
+ACTIONS = (ALLOW, DENY, ASK)
+
+
 @dataclass
 class Decision:
+    """What the policy says about one call.
+
+    `allowed` is the effective yes/no the proxy acts on; `action` is
+    the verdict the policy actually reached, which may be `ask` — "a
+    human should decide." An `ask` decision is not allowed until
+    something resolves it (`approved()`), and if nothing can, it
+    degrades to deny. `allowed` stays a plain field rather than a
+    property so `Decision(True, ...)` keeps working."""
     allowed: bool
     category: str
     reason: str
     matched_rule: Optional[str] = None
     arguments: List[ClassifiedArgument] = field(default_factory=list)
+    action: str = ""
+    # How an `ask` was resolved: no_channel, timeout, denied_by_operator,
+    # approved_once, approved_for_session, approved_always, granted.
+    ask_resolution: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not self.action:
+            self.action = ALLOW if self.allowed else DENY
+        elif self.action == ASK:
+            self.allowed = False
+
+    def resolved(self, allowed: bool, resolution: str, note: str) -> "Decision":
+        """A copy of this `ask` decision with the human's (or the
+        fallback's) answer applied."""
+        return Decision(
+            allowed, self.category, f"{self.reason} — {note}", self.matched_rule,
+            self.arguments, ALLOW if allowed else DENY, resolution,
+        )
 
     @property
     def argument_categories(self) -> dict:
@@ -168,7 +198,7 @@ class PolicyEngine:
         # bypass entirely, at the cost of rejecting calls to tools whose
         # schemas the classifier can't read. Check with
         # `agentguard check-policy --probe` before flipping it.
-        self.unclassified_arguments = config.get("unclassified_arguments", UNCLASSIFIED_ALLOW)
+        self.unclassified_arguments = config.get("unclassified_arguments", ALLOW)
         # `tools.<name>:` overrides. A tool's effective rules are the
         # global ones with each *field* the override sets replaced —
         # `tools.fetch.network.allow_patterns` swaps the allowlist for
@@ -180,6 +210,7 @@ class PolicyEngine:
         # Per-session ceilings; the Session holds the counters. A missing
         # key means unlimited.
         self.budgets: dict = dict(config.get("budgets") or {})
+        self.budget_action: str = self.budgets.pop("on_exceed", DENY)
         # The three cross-call rules. See _check_sequences.
         sequences = config.get("sequences") or {}
         sensitive = sequences.get("deny_network_after_sensitive_read")
@@ -189,6 +220,7 @@ class PolicyEngine:
         )
         self.max_distinct_directories: Optional[int] = sequences.get("max_distinct_directories")
         self.deny_exec_after_fetch: bool = bool(sequences.get("deny_exec_after_fetch", False))
+        self.sequence_action: str = sequences.get("on_trip", DENY)
         # Shared with the proxy, which feeds it `tools/list` schemas as
         # they go by. Without any registered schema it classifies by key
         # name alone, which is the v1 behavior.
@@ -217,7 +249,7 @@ class PolicyEngine:
                 False, "budget",
                 f"session budget max_total_output_bytes exhausted "
                 f"({session.output_bytes} of {limit} bytes already delivered)",
-                "max_total_output_bytes",
+                "max_total_output_bytes", action=self.budget_action,
             )
         for category in categories:
             key = BUDGET_KEY_FOR_CATEGORY[category]
@@ -226,7 +258,7 @@ class PolicyEngine:
                 return Decision(
                     False, "budget",
                     f"session budget {key} exhausted ({limit} {category} calls already allowed)",
-                    key,
+                    key, action=self.budget_action,
                 )
         return None
 
@@ -241,13 +273,13 @@ class PolicyEngine:
                 f"network call after a sensitive file read ('{session.sensitive_reads[0]}'"
                 + (f" and {len(session.sensitive_reads) - 1} more" if len(session.sensitive_reads) > 1 else "")
                 + ") in this session",
-                "deny_network_after_sensitive_read",
+                "deny_network_after_sensitive_read", action=self.sequence_action,
             )
         if self.deny_exec_after_fetch and COMMAND_EXEC in touched and session.fetched:
             return Decision(
                 False, "sequence",
                 "command execution after a network call in this session",
-                "deny_exec_after_fetch",
+                "deny_exec_after_fetch", action=self.sequence_action,
             )
         if self.max_distinct_directories is not None and FILE_ACCESS in touched:
             new_dirs = {parent_directory(a.value) for a in classified if a.category == FILE_ACCESS}
@@ -258,7 +290,7 @@ class PolicyEngine:
                     False, "sequence",
                     f"call would touch {total} distinct directories ('{sorted(new_dirs)[0]}' is new); "
                     f"max_distinct_directories is {self.max_distinct_directories}",
-                    "max_distinct_directories",
+                    "max_distinct_directories", action=self.sequence_action,
                 )
         return None
 
@@ -268,13 +300,25 @@ class PolicyEngine:
         session.note_allowed_call(decision, self.sensitive_patterns)
 
     @staticmethod
-    def _load_category(raw: dict) -> _CategoryRule:
+    def _deny_entries(raw_list) -> List[Tuple[str, str]]:
+        """deny_patterns entries are a plain pattern (action deny) or
+        `{pattern: ..., action: deny|ask}`. Normalized to (pattern, action)."""
+        entries = []
+        for item in raw_list or []:
+            if isinstance(item, dict):
+                entries.append((item["pattern"], item.get("action", DENY)))
+            else:
+                entries.append((item, DENY))
+        return entries
+
+    @classmethod
+    def _load_category(cls, raw: dict) -> _CategoryRule:
         raw = raw or {}
         return _CategoryRule(
             enabled=raw.get("enabled", True),
-            deny_patterns=raw.get("deny_patterns", []) or [],
+            deny_patterns=cls._deny_entries(raw.get("deny_patterns")),
             allow_patterns=raw.get("allow_patterns", []) or [],
-            default_action=raw.get("default_action", "allow"),
+            default_action=raw.get("default_action", ALLOW),
         )
 
     def rules_for_tool(self, tool_name: str) -> "_ToolRules":
@@ -290,7 +334,7 @@ class PolicyEngine:
             if section:
                 categories[category] = _CategoryRule(
                     enabled=section.get("enabled", base.enabled),
-                    deny_patterns=(section.get("deny_patterns") if "deny_patterns" in section else base.deny_patterns) or [],
+                    deny_patterns=(self._deny_entries(section.get("deny_patterns")) if "deny_patterns" in section else base.deny_patterns),
                     allow_patterns=(section.get("allow_patterns") if "allow_patterns" in section else base.allow_patterns) or [],
                     default_action=section.get("default_action", base.default_action),
                 )
@@ -360,12 +404,12 @@ class PolicyEngine:
                     decision.reason += f" (under tools.{tool_name} override)"
                 return decision
 
-        if unclassified_keys and rules.unclassified_arguments == UNCLASSIFIED_DENY:
+        if unclassified_keys and rules.unclassified_arguments != ALLOW:
             return Decision(
                 False, UNCLASSIFIED,
                 f"tool '{tool_name}' argument(s) {', '.join(repr(k) for k in unclassified_keys)} "
-                "could not be classified and unclassified_arguments is 'deny'",
-                arguments=classified,
+                f"could not be classified and unclassified_arguments is '{rules.unclassified_arguments}'",
+                arguments=classified, action=rules.unclassified_arguments,
             )
         if session is not None:
             decision = (
@@ -403,20 +447,21 @@ class PolicyEngine:
         `default_action` decides. What a "match" means differs — glob on
         the expanded path, glob on the hostname, regex on the command."""
         subject, matches = self._matcher(category, value)
-        for pattern in rule.deny_patterns:
+        for pattern, action in rule.deny_patterns:
             if matches(pattern):
                 return Decision(
                     False, category,
-                    f"value '{value}' matches deny pattern '{pattern}'",
-                    pattern,
+                    f"value '{value}' matches {action} pattern '{pattern}'",
+                    pattern, action=action,
                 )
         if not rule.allow_patterns or any(matches(p) for p in rule.allow_patterns):
             return None
-        if rule.default_action == "deny":
+        if rule.default_action != ALLOW:
             noun = "host" if category == NETWORK else "value"
             return Decision(
                 False, category,
                 f"{noun} '{subject}' is not in the {category} allowlist",
+                action=rule.default_action,
             )
         return None
 
