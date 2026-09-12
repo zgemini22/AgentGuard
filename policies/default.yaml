@@ -15,6 +15,18 @@
 # records the category as "unclassified" so the gap is visible.
 unclassified_arguments: allow
 
+# Where `ask` verdicts go. Any deny pattern may be written as
+#   - pattern: "**/.env"
+#     action: ask
+# and default_action / unclassified_arguments / budgets.on_exceed /
+# sequences.on_trip accept `ask` too. With approval_socket set, the
+# proxy listens on that Unix socket and `agentguard approve --socket
+# <path>` in another terminal shows each pending call and takes
+# deny / once / session / always. Without it (or on a platform without
+# Unix sockets) every ask is denied, and the audit entry says why.
+# approval_socket: /tmp/agentguard-approve.sock
+# approval_timeout: 60      # seconds an ask waits before it is denied
+
 file_access:
   enabled: true
   deny_patterns:

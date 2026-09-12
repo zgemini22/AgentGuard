@@ -172,6 +172,48 @@ A denial names the rule and what tripped it (`network call after a
 sensitive file read ('/app/.env') in this session`). These are the only
 three; a fourth is a design conversation, not a config key.
 
+### The third verdict: `ask`
+
+sudo, browser permissions, and macOS TCC all have a third answer
+besides allow and deny: ask the human. Without one, a default-deny
+network policy blocks legitimate work constantly, the only fix is
+"edit YAML, restart," and people flip to `default_action: allow`.
+
+Any deny pattern can be written with `action: ask`, and
+`default_action`, `unclassified_arguments`, `budgets.on_exceed` and
+`sequences.on_trip` accept `ask` too:
+
+```yaml
+file_access:
+  deny_patterns:
+    - "**/.ssh/**"                      # hard deny
+    - pattern: "**/.env"
+      action: ask                       # a human decides
+network:
+  allow_patterns: ["*.github.com"]
+  default_action: ask                   # anything else: a human decides
+approval_socket: /tmp/agentguard-approve.sock
+approval_timeout: 60
+```
+
+The proxy's own stdin/stdout are the MCP transport, so the human has
+to be somewhere else: with `approval_socket` set, the proxy listens on
+that Unix socket (mode 0600) and
+
+```bash
+agentguard approve --socket /tmp/agentguard-approve.sock
+```
+
+in another terminal shows each pending call — tool, classified
+arguments, the rule that tripped, what a grant would cover — and takes
+**deny**, **once**, **session**, or **always**. An unanswered ask is
+denied after `approval_timeout` seconds. Without a socket configured,
+or on a platform without Unix sockets (Windows, for now), every `ask`
+is denied and the audit entry records `ask_resolution: no_channel`
+rather than pretending a rule said no. `check-policy --probe` reports
+`ASK` (exit 4) so you can see which calls would prompt before turning
+it on.
+
 ### Validation and `check-policy`
 
 The policy file is validated strictly when loaded: an unknown key

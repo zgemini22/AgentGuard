@@ -143,6 +143,11 @@ def _is_positive_int(value, where, errors):
         errors.append(f"{where}: expected a positive integer, got {value!r}")
 
 
+def _is_positive_number(value, where, errors):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        errors.append(f"{where}: expected a positive number, got {value!r}")
+
+
 def _named_rule(pattern_check: Check) -> Check:
     return _mapping({"name": _is_str, "pattern": pattern_check}, required=("name", "pattern"))
 
@@ -209,6 +214,11 @@ SEQUENCE_SCHEMA: Dict[str, Check] = {
 
 POLICY_SCHEMA: Dict[str, Check] = {
     "unclassified_arguments": _is_action,
+    # Where `ask` verdicts go: a Unix socket path the proxy listens on
+    # for `agentguard approve`, and how long an ask waits (seconds)
+    # before it is denied.
+    "approval_socket": _is_str,
+    "approval_timeout": _is_positive_number,
     "file_access": _category(_is_str),
     "command_exec": _category(_is_regex),
     "network": _category(_is_str),

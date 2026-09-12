@@ -206,6 +206,8 @@ class MCPProxy:
 
     def run(self) -> int:
         self.audit.begin_session(self.session)
+        if hasattr(self.approver, "start"):
+            self.approver.start()
         proc = subprocess.Popen(
             self.server_cmd,
             stdin=subprocess.PIPE,
@@ -225,6 +227,8 @@ class MCPProxy:
                 proc.stdin.close()
             proc.wait()
             server_reader.join(timeout=1)
+            if hasattr(self.approver, "stop"):
+                self.approver.stop()
         exit_code = proc.returncode or 0
         self.audit.end_session(self.session, exit_code)
         return exit_code

@@ -6,6 +6,7 @@
                             [--probe TOOL '{"arg": "value"}']
     agentguard verify-audit <audit-log-path>
     agentguard report <audit-log-path> [--session ID] [--json]
+    agentguard approve --socket <path>      # answer the proxy's `ask` verdicts
 """
 
 from __future__ import annotations
@@ -18,6 +19,14 @@ from typing import List, Optional
 
 import yaml
 
+from .approval import (
+    DEFAULT_TIMEOUT_SECONDS,
+    ApprovalBroker,
+    ApprovalClient,
+    ApprovalServer,
+    supports_unix_sockets,
+    terminal_prompt,
+)
 from .audit import AuditLog, verify_audit_log
 from .injection import InjectionDetector
 from .policy import PolicyEngine
@@ -72,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_parser.add_argument("audit_log", help="Path to the audit log file to verify")
 
+    approve_parser = subparsers.add_parser(
+        "approve",
+        help="Connect to a running proxy's approval socket and answer its `ask` verdicts",
+    )
+    approve_parser.add_argument("--socket", required=True, help="The approval_socket path from the proxy's policy")
+
     report_parser = subparsers.add_parser(
         "report",
         help="What did the agent touch? Files, hosts, commands, blocks, redactions — per session, from the audit log",
@@ -108,11 +123,47 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     injection_detector = InjectionDetector.from_config(raw_config)
     audit = AuditLog(args.audit_log)
     session = Session.new(server_cmd, policy.classifier, policy_path=args.config)
+    approver = _build_approver(raw_config, session)
     proxy = MCPProxy(
         server_cmd, policy, audit,
         redactor=redactor, injection_detector=injection_detector, session=session,
+        approver=approver,
     )
     return proxy.run()
+
+
+def _build_approver(config: dict, session: Session):
+    """The approval channel, if the policy configures one and the
+    platform can provide it. Otherwise None — and a line on stderr, so
+    "why is every ask denied?" has an answer without reading the log."""
+    path = config.get("approval_socket")
+    if not path:
+        return None
+    timeout = float(config.get("approval_timeout", DEFAULT_TIMEOUT_SECONDS))
+    if not supports_unix_sockets():
+        print(
+            f"agentguard: approval_socket is set ({path}) but this platform has no Unix domain "
+            "sockets; every `ask` verdict will be denied. (Named-pipe support is planned.)",
+            file=sys.stderr,
+        )
+        return None
+    broker = ApprovalBroker(timeout=timeout)
+    return ApprovalServer(broker, path, session=session)
+
+
+def _approve(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    if not supports_unix_sockets():
+        parser.error("agentguard approve needs Unix domain sockets, which this platform does not provide")
+    client = ApprovalClient(args.socket, terminal_prompt, output=sys.stdout)
+    try:
+        answered = client.run()
+    except FileNotFoundError:
+        parser.error(f"no proxy is listening at {args.socket} (is `agentguard run` up, with approval_socket set?)")
+    except KeyboardInterrupt:
+        print()
+        return 130
+    print(f"proxy went away; {answered} verdict(s) given.")
+    return 0
 
 
 def _file_sha256(path: str) -> str:
@@ -260,6 +311,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _verify_audit(args)
     if args.command == "report":
         return _report(args)
+    if args.command == "approve":
+        return _approve(args, parser)
     parser.error(f"unknown command: {args.command}")
     return 2
 
