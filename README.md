@@ -214,6 +214,20 @@ rather than pretending a rule said no. `check-policy --probe` reports
 `ASK` (exit 4) so you can see which calls would prompt before turning
 it on.
 
+**What a grant covers.** `session` and `always` grant a *scope* —
+`tool:category:rule` (or `tool:category:value` for an allowlist miss),
+so approving `fetch` for one host says nothing about the next host,
+and approving `read_file` past `**/.env` says nothing about `*.pem`.
+Session grants die with the session. `always` writes to a separate
+`grants_file:` overlay (`grants.yaml`), **never** to the policy file:
+the policy is the trust root, and a tool that edits its own trust
+root under time pressure is a footgun. The overlay is loaded after the
+policy, listed separately by `check-policy`, and every grant is an
+audit entry so `report` shows "operator approved X at T." With no
+`grants_file` configured, `always` behaves as `session` and the audit
+entry says so. A grant only ever turns an `ask` into an allow — a hard
+deny never reached an operator, so nothing can be granted against it.
+
 ### Validation and `check-policy`
 
 The policy file is validated strictly when loaded: an unknown key

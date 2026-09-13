@@ -71,6 +71,10 @@ class Session:
     sensitive_reads: List[str] = field(default_factory=list)
     directories: Set[str] = field(default_factory=set)
     fetched: bool = False
+    # Scopes an operator answered `session` (or `always` with no
+    # grants_file) to. Consulted by the policy engine before an ask is
+    # raised again. See agentguard/grants.py.
+    grants: Set[str] = field(default_factory=set)
 
     def note_allowed_call(self, decision, sensitive_patterns: Sequence[str] = ()) -> None:
         """Called when a call is forwarded. One budget increment per

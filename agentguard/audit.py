@@ -191,6 +191,21 @@ class AuditLog:
         }
         return self._append(entry)
 
+    def record_grant(self, tool_name: str, scope: str, duration: str,
+                     grants_file: Optional[str], note: Optional[str] = None) -> dict:
+        """Logs that an operator answered `session` or `always` to an
+        ask, so `report` can show "operator approved X at T"."""
+        entry = {
+            "ts": time.time(),
+            "event": "grant",
+            "tool": tool_name,
+            "scope": scope,
+            "duration": duration,
+            "grants_file": grants_file,
+            "note": note,
+        }
+        return self._append(entry)
+
     def record_unscannable(self, tool_name: str, method: str, kinds: List[str]) -> dict:
         """Logs that a response carried content the output scanners could
         not read as text (images, audio, binary blobs). It was passed

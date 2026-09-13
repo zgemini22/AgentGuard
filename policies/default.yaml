@@ -26,6 +26,13 @@ unclassified_arguments: allow
 # Unix sockets) every ask is denied, and the audit entry says why.
 # approval_socket: /tmp/agentguard-approve.sock
 # approval_timeout: 60      # seconds an ask waits before it is denied
+#
+# Where an operator's `always` answers are written. This file is NOT
+# the policy — it's an overlay of grants, loaded after the policy and
+# shown separately by check-policy, so "always" under time pressure
+# can never quietly weaken the trust root. Unset: `always` behaves as
+# `session`. Each grant is one scope (tool:category:rule-or-value).
+# grants_file: agentguard_grants.yaml
 
 file_access:
   enabled: true

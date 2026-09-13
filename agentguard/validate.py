@@ -219,6 +219,9 @@ POLICY_SCHEMA: Dict[str, Check] = {
     # before it is denied.
     "approval_socket": _is_str,
     "approval_timeout": _is_positive_number,
+    # The grants.yaml overlay `always` answers are written to. Unset
+    # means `always` behaves as `session`.
+    "grants_file": _is_str,
     "file_access": _category(_is_str),
     "command_exec": _category(_is_regex),
     "network": _category(_is_str),

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterator, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
+from .grants import GrantStore
 from .session import parent_directory
 from .validate import PolicyError, load_policy, validate_policy  # noqa: F401
 from .classify import (  # noqa: F401  (re-exported for backward compatibility)
@@ -121,6 +122,19 @@ class Decision:
         audit log records, so a reader can tell which arguments the
         policy actually looked at."""
         return {a.key: (a.category or "unclassified") for a in self.arguments}
+
+
+def grant_scope(tool: str, decision: Decision) -> str:
+    """What a `session`/`always` answer would grant: this tool, this
+    category, and the rule that tripped — or, for an allowlist miss
+    with no rule, the specific value that missed (the host, the path).
+    Deliberately narrow: approving one host never approves the next."""
+    if decision.matched_rule:
+        return f"{tool}:{decision.category}:{decision.matched_rule}"
+    for arg in decision.arguments:
+        if arg.category == decision.category:
+            return f"{tool}:{decision.category}:{arg.value}"
+    return f"{tool}:{decision.category}:*"
 
 
 @dataclass
@@ -221,6 +235,9 @@ class PolicyEngine:
         self.max_distinct_directories: Optional[int] = sequences.get("max_distinct_directories")
         self.deny_exec_after_fetch: bool = bool(sequences.get("deny_exec_after_fetch", False))
         self.sequence_action: str = sequences.get("on_trip", DENY)
+        # Persistent operator grants (see agentguard/grants.py). Loaded
+        # here so a malformed overlay fails at startup like the policy.
+        self.grant_store = GrantStore(config.get("grants_file"))
         # Shared with the proxy, which feeds it `tools/list` schemas as
         # they go by. Without any registered schema it classifies by key
         # name alone, which is the v1 behavior.
@@ -371,8 +388,21 @@ class PolicyEngine:
 
     def evaluate(self, tool_name: str, arguments: dict, session=None) -> Decision:
         """Judges one call. With a `session`, the cross-call rules —
-        budgets — apply too; without one (check-policy --probe) the
-        call is judged on its own, as v1 did."""
+        budgets, sequences, session grants — apply too; without one
+        (check-policy --probe) the call is judged on its own, as v1 did,
+        though persistent grants still apply."""
+        decision = self._evaluate(tool_name, arguments, session)
+        if decision.action != ASK:
+            return decision
+        # An ask the operator has already answered for this scope.
+        scope = grant_scope(tool_name, decision)
+        if session is not None and scope in session.grants:
+            return decision.resolved(True, "granted", f"ask: covered by session grant '{scope}'")
+        if scope in self.grant_store.scopes():
+            return decision.resolved(True, "granted", f"ask: covered by persistent grant '{scope}'")
+        return decision
+
+    def _evaluate(self, tool_name: str, arguments: dict, session=None) -> Decision:
         classified = self.classify_arguments(tool_name, arguments)
         rules = self.rules_for_tool(tool_name)
         if not rules.enabled:

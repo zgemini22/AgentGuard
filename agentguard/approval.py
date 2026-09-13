@@ -53,7 +53,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, List, Optional
 
-from .policy import Decision
+from .policy import Decision, grant_scope  # noqa: F401  (re-exported)
 
 VERDICT_DENY = "deny"
 VERDICT_ONCE = "once"
@@ -72,19 +72,6 @@ _RESOLUTION_FOR_VERDICT = {
 
 def supports_unix_sockets() -> bool:
     return hasattr(socket, "AF_UNIX")
-
-
-def grant_scope(tool: str, decision: Decision) -> str:
-    """What a `session`/`always` answer would grant: this tool, this
-    category, and the rule that tripped — or, for an allowlist miss
-    with no rule, the specific value that missed (the host, the path).
-    Deliberately narrow: approving one host never approves the next."""
-    if decision.matched_rule:
-        return f"{tool}:{decision.category}:{decision.matched_rule}"
-    for arg in decision.arguments:
-        if arg.category == decision.category:
-            return f"{tool}:{decision.category}:{arg.value}"
-    return f"{tool}:{decision.category}:*"
 
 
 @dataclass
@@ -212,12 +199,13 @@ class ApprovalServer:
     approver for the proxy (`ask`), and has start()/stop() so the proxy
     can bracket its lifetime."""
 
-    def __init__(self, broker: ApprovalBroker, path: str, session=None):
+    def __init__(self, broker: ApprovalBroker, path: str, session=None, grants_file: Optional[str] = None):
         if not supports_unix_sockets():
             raise OSError("Unix domain sockets are not available on this platform")
         self.broker = broker
         self.path = path
         self.session = session
+        self.grants_file = grants_file  # told to approvers so they know what `always` does
         self._server: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._stopping = threading.Event()
@@ -301,7 +289,7 @@ class ApprovalServer:
                 send({"type": "resolved", "id": request.id, "verdict": request.verdict})
 
         try:
-            hello = {"type": "hello"}
+            hello = {"type": "hello", "grants_file": self.grants_file}
             if self.session is not None:
                 hello.update(session_id=self.session.id, server_cmd=self.session.server_cmd)
             send(hello)
@@ -422,6 +410,10 @@ class ApprovalClient:
         if kind == "hello":
             cmd = " ".join(message.get("server_cmd") or []) or "?"
             self._say(f"connected: session {str(message.get('session_id', '?'))[:12]}  server: {cmd}")
+            if message.get("grants_file"):
+                self._say(f"'always' answers persist to {message['grants_file']}")
+            else:
+                self._say("'always' = session only: the proxy has no grants_file configured")
             self._say("waiting for the proxy to ask something...")
         elif kind == "ask":
             with self._wakeup:

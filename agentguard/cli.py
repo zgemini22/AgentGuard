@@ -28,6 +28,7 @@ from .approval import (
     terminal_prompt,
 )
 from .audit import AuditLog, verify_audit_log
+from .grants import GrantStore
 from .injection import InjectionDetector
 from .policy import PolicyEngine
 from .proxy import MCPProxy
@@ -148,7 +149,7 @@ def _build_approver(config: dict, session: Session):
         )
         return None
     broker = ApprovalBroker(timeout=timeout)
-    return ApprovalServer(broker, path, session=session)
+    return ApprovalServer(broker, path, session=session, grants_file=config.get("grants_file"))
 
 
 def _approve(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
@@ -214,6 +215,15 @@ def _print_effective_policy(path: str, config: dict, out) -> None:
     budgets = config.get("budgets") or {}
     if budgets:
         print("budgets: " + ", ".join(f"{k}={v}" for k, v in budgets.items()), file=out)
+
+    grants_file = config.get("grants_file")
+    if config.get("approval_socket"):
+        print(f"approval_socket: {config['approval_socket']}  (timeout {config.get('approval_timeout', DEFAULT_TIMEOUT_SECONDS):g}s)", file=out)
+    if grants_file:
+        store = GrantStore(grants_file)
+        print(f"grants_file: {grants_file}  ({len(store.grants)} persistent grant(s) — operator `always` answers, not policy)", file=out)
+        for g in store.grants:
+            print(f"  grant  {g.scope}   ({g.granted_at}, session {g.session_id[:12]})", file=out)
 
     for section_name in ("redaction", "injection_detection"):
         section = config.get(section_name) or {}
