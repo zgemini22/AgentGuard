@@ -10,14 +10,20 @@ permissions:
 
 jobs:
   test:
-    name: pytest (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: pytest (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     env:
       PYTHONUTF8: "1"
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.9", "3.12"]
+        include:
+          # The approval channel needs AF_UNIX; on Windows those tests
+          # skip and the degrade-to-deny path is what gets exercised.
+          - os: windows-latest
+            python-version: "3.12"
 
     steps:
       - name: Check out repository

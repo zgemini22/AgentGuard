@@ -87,13 +87,24 @@ precise about which:
   specifically matters for a use case, it's worth checking the other
   projects' actual behavior rather than trusting a marketing summary on
   either side — including this one.
-- **Minimal footprint, on purpose.** One runtime dependency (PyYAML),
-  ~680 lines across five focused modules (`policy.py`, `redact.py`,
-  `injection.py`, `audit.py`, `proxy.py` — verifiable with `wc -l`), no
-  dashboard, no SaaS component, no account system. Easy to read start
-  to finish in one sitting, which several of the more feature-complete
-  competitors above are not — that's a real tradeoff, not a
-  superiority claim: less capability, more legibility.
+- **An operator-consent path built into the verdict, not bolted on.**
+  0.2 added `ask` as a third verdict beside allow/deny, answered over a
+  Unix socket by `agentguard approve` with sudo-style deny / once /
+  session / always, where "always" lands in a reviewable overlay
+  rather than the policy. Whether the comparable gateways have an
+  equivalent was **not re-verified for this revision** — several
+  describe "real-time monitoring" or a dashboard, which may or may not
+  include a synchronous approve/deny on a pending call. Treat this as
+  "AgentGuard has one," not "the others don't," until someone checks.
+- **Minimal footprint, on purpose — less so than it was.** One runtime
+  dependency (PyYAML), ~3,300 lines across twelve modules
+  (`python3 scripts/stats.py`), no dashboard, no SaaS component, no
+  account system. 0.1 was ~680 lines in five modules; 0.2 roughly
+  quintupled that to make the existing guarantees hold (schema
+  classification, normalization, strict validation) and add sessions,
+  budgets, `ask`, and anchoring. Still readable start to finish in a
+  sitting, but the "tiny" claim is weaker than it was and this line
+  should keep tracking the real number.
 - **Built from scratch as a from-the-ground-up exercise**, not a
   wrapper around an existing framework — every layer (policy matching,
   regex-based secret/injection detection, the hash chain) is

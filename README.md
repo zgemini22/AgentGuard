@@ -5,7 +5,8 @@
 
 A minimal-privilege proxy for AI agent tool calls. AgentGuard sits between
 an MCP client (e.g. Claude Code) and an MCP server, and enforces a policy
-on every `tools/call` before it reaches the real server.
+on every tool call before it reaches the real server — per call, per
+session, and with a human in the loop when the policy says `ask`.
 
 ## Architecture
 
@@ -14,23 +15,31 @@ flowchart LR
     Agent["Agent<br/>(MCP client)"]
     Proxy["agentguard proxy"]
     Server["Real MCP server"]
-    Policy["Policy engine<br/>(YAML)"]
+    Policy["Policy engine<br/>(YAML, validated)"]
+    Session["Session<br/>(schemas, budgets,<br/>sequence state, grants)"]
+    Operator["Operator<br/>(agentguard approve)"]
     Injection["Injection<br/>detector"]
     Redact["Secret<br/>redactor"]
-    Audit["Audit log<br/>(hash-chained JSONL)"]
+    Audit["Audit log<br/>(hash-chained, anchored)"]
 
-    Agent -- "tools/call request" --> Proxy
+    Agent -- "tools/call, resources/read" --> Proxy
     Proxy -- "checked against" --> Policy
+    Policy <-- "cross-call state" --> Session
     Policy -- "allowed" --> Server
     Policy -. "denied: JSON-RPC error, never reaches server" .-> Agent
-    Server -- "tools/call result" --> Proxy
-    Proxy -- "scanned by" --> Injection
+    Policy -- "ask" --> Operator
+    Operator -- "deny / once / session / always" --> Policy
+    Server -- "tools/list (schemas -> Session)" --> Proxy
+    Server -- "result" --> Proxy
+    Proxy -- "normalized, scanned by" --> Injection
     Injection -- "clean" --> Redact
-    Injection -. "hit: isError, blocked" .-> Agent
+    Injection -. "hit: withheld" .-> Agent
     Redact -- "masked result" --> Agent
     Policy --> Audit
+    Operator --> Audit
     Injection --> Audit
     Redact --> Audit
+    Audit -- "agentguard report" --> Operator
 ```
 
 The proxy speaks the MCP stdio transport (newline-delimited JSON-RPC 2.0)
@@ -70,9 +79,9 @@ so the audit trail says where the scanners had no visibility.
 
 Every policy decision, redaction, and injection block is recorded in the
 audit log, which is itself hash-chained — see
-[Audit log integrity](#audit-log-integrity-v1).
+[Audit log integrity](#audit-log-integrity).
 
-## Policy engine (v1)
+## Policy engine
 
 Rules live in a YAML file (see `policies/default.yaml`) with three
 independent categories:
@@ -257,7 +266,7 @@ schema exactly as the proxy would at runtime — the way to find out
 whether a server's schemas are good enough to set
 `unclassified_arguments: deny`.
 
-## Secret redaction (v1)
+## Secret redaction
 
 A separate `redaction` section in the same YAML config (see
 `policies/default.yaml`) lists named regex rules — AWS/GitHub/Slack key
@@ -267,7 +276,7 @@ known-format matching, not entropy-based secret detection — no
 statistical guessing until there's real traffic to tune false-positive
 rates against.
 
-## Prompt-injection detection (v1)
+## Prompt-injection detection
 
 A separate `injection_detection` section (see `policies/default.yaml`)
 lists named regex rules that look for instruction-shaped text in tool
@@ -282,7 +291,7 @@ next to real text. Rule-based matching only for now — an optional LLM
 classification layer for phrasings the rules miss is planned but not
 built.
 
-## Audit log integrity (v1)
+## Audit log integrity
 
 Every entry AgentGuard writes carries `prev_hash` (the previous entry's
 sha256) and `hash` (sha256 of the entry's own fields plus `prev_hash`) —
@@ -372,20 +381,37 @@ policy/redaction/injection checks are new. In your agent's MCP client
 config, this usually just means swapping the server's launch command for
 `agentguard run --config policies/default.yaml -- <original command>`.
 
-**3. Adjust the policy to your environment.** Start from
+**3. Adjust the policy to your environment, and check it.** Start from
 `policies/default.yaml`, add deny patterns for anything else sensitive
 on your machine, and add your own domains to the network allowlist —
 the shipped default only allows a handful (GitHub, Anthropic, PyPI).
-
-**4. See it work before trusting it.** Run `./demo/run_demo.sh` (below)
-to watch the same policy engine block a real SSH-key read and a real
-poisoned-page injection in about 30 seconds, with the audit log to prove
-it.
-
-**5. Check the audit trail periodically:**
+Then:
 
 ```bash
-agentguard verify-audit agentguard_audit.log
+agentguard check-policy --config policies/default.yaml
+agentguard check-policy --probe read_file '{"path": "~/.ssh/id_rsa"}'
+```
+
+A typo is an error, not a silently empty rule; `--probe` shows what the
+engine would do with a call and why.
+
+**4. Put a human in the loop.** Turn the rules you're unsure about into
+`action: ask`, set `approval_socket:` in the policy, and run
+`agentguard approve --socket <path>` in a second terminal. Answer each
+prompt with deny / once / session / always; "always" lands in a
+reviewable `grants_file`, never in the policy.
+
+**5. See it work before trusting it.** Run `./demo/run_demo.sh` (below)
+to watch the same engine block a real SSH-key read (under two different
+argument names), a poisoned-page injection, and the audit chain catching
+an edit — in about 30 seconds.
+
+**6. Afterwards, ask what the agent did — and whether the record is
+intact:**
+
+```bash
+agentguard report agentguard_audit.log
+agentguard verify-audit agentguard_audit.log --anchor "$(cat my-anchor.txt)"
 ```
 
 ## Demo
@@ -430,15 +456,24 @@ pip install -e . pytest coverage
 pytest
 ```
 
-Covers the policy engine's allow/deny decisions per category, the
-redactor's and injection detector's pattern matching, the audit log's
-hash chain (chaining across entries, surviving a process restart,
-detecting an edited entry / a deleted entry / a forged appended entry),
-and end-to-end proxy tests asserting: a blocked call never reaches the
-wrapped server and its secret never appears in the response; a normal
-call round-trips correctly; an allowed call's output gets a matched
-secret redacted and logged; a poisoned tool result is replaced entirely
-and logged, while a clean one passes through untouched.
+Covers: the argument classifier (schema formats, name tokens,
+descriptions, the rename bypass caught with and without a schema);
+the policy engine's decisions per category, per-tool overrides,
+fail-closed mode, budgets, the three sequence rules, `ask` and grants;
+strict validation (every typo shape, and a cross-check that every key
+the engines read is one the validator knows); the normalizer
+(zero-width, homoglyphs, NFKC, base64, and that redaction edits the
+original at the right spans); the redactor and injection detector;
+the audit log's hash chain (chaining, restart, edited / deleted /
+forged entries) and anchoring (a from-scratch rewrite caught, truncation
+caught); the approval broker on every platform and the Unix-socket
+transport where AF_UNIX exists, including an end-to-end `ask` through
+the proxy with a real server and a real approver; `report` over a busy
+session and over a v1-era log; and end-to-end proxy tests for every
+inspected method — a blocked call never reaches the wrapped server, a
+normal call round-trips, secrets get redacted, poisoned results are
+withheld, unscannable content is logged, and `tools/list` schemas are
+captured before the call that needs them.
 
 ## By the numbers
 
@@ -449,10 +484,10 @@ including right before quoting a number anywhere outside this repo.
 
 | | |
 |---|---|
-| Tests | 62 (`pytest -q \| tail -1`) |
-| Line coverage, `agentguard/` | 93% (`coverage run -m pytest -q && coverage report --include='agentguard/*'`) |
+| Tests | 222 on Linux/macOS; 217 + 5 skipped on Windows, where the Unix-socket tests don't apply (`pytest -q \| tail -1`) |
+| Line coverage, `agentguard/` | 93% on Linux (`coverage run -m pytest -q && coverage report --include='agentguard/*'`) |
 | Built-in policy/detection rules shipped in `policies/default.yaml` | 34 total — 10 file-access deny patterns, 4 command deny patterns, 6 network allow patterns, 7 redaction rules, 7 injection-detection rules (`python3 scripts/stats.py`) |
-| Core module size | 678 lines across 5 files: `policy.py`, `redact.py`, `injection.py`, `audit.py`, `proxy.py` (`python3 scripts/stats.py`) |
+| Core module size | 3,289 lines across 12 files: `policy`, `classify`, `validate`, `session`, `grants`, `redact`, `injection`, `normalize`, `audit`, `report`, `approval`, `proxy` (`python3 scripts/stats.py`) |
 | Runtime dependencies | 1 (PyYAML) (`python3 scripts/stats.py`) |
 
 ## Further reading
@@ -464,3 +499,6 @@ including right before quoting a number anywhere outside this repo.
   gateways.
 - [`docs/blog/`](docs/blog/) — write-ups on the design decisions and
   the injection detector's false-positive/false-negative tradeoffs.
+- [`docs/ROADMAP-0.2.md`](docs/ROADMAP-0.2.md) — the plan 0.2 was
+  built to, and why the LLM classifier wasn't it.
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed, release by release.

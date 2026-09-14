@@ -63,6 +63,16 @@ run_and_show \
   "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"$WORKDIR/.ssh/id_rsa\"}}}" \
   python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
+header "2b. Same key via read_document(file_location=...) — the argument isn't called 'path'"
+note "The proxy read the server's tools/list schema, so the renamed argument is still a path."
+printf '%s\n%s\n%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"read_document\",\"arguments\":{\"file_location\":\"$WORKDIR/.ssh/id_rsa\"}}}" \
+  | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py 2>&1 \
+  | grep -v '"tools"' | while IFS= read -r line; do echo "$line" | jq -c . 2>/dev/null || echo "$line"; done
+sleep 1.5
+
 header "3. An ordinary file read still works — this isn't a blanket deny"
 run_and_show \
   "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"$WORKDIR/notes.txt\"}}}" \
@@ -88,6 +98,11 @@ run_and_show \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch_url","arguments":{"url":"https://docs.example.com/readme"}}}' \
   python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
+header "7b. What did all of that touch? agentguard report, from the audit log alone"
+python3 -m agentguard.cli report "$AUDIT_LOG" | head -40
+note "(one session per proxy run above; a real agent session is one block)"
+sleep 2
+
 header "8. Verify the audit log's hash chain"
 python3 -m agentguard.cli verify-audit "$AUDIT_LOG"
 sleep 1.5
@@ -98,10 +113,11 @@ import json, sys
 path = sys.argv[1]
 with open(path) as f:
     lines = [l for l in f if l.strip()]
-entry = json.loads(lines[0])
+index = next(i for i, l in enumerate(lines) if json.loads(l).get("event") == "policy_decision")
+entry = json.loads(lines[index])
 print(f"before: allowed={entry['allowed']}")
 entry["allowed"] = True
-lines[0] = json.dumps(entry) + "\n"
+lines[index] = json.dumps(entry) + "\n"
 with open(path, "w") as f:
     f.writelines(lines)
 print(f"after:  allowed={entry['allowed']}  (edited directly in the file)")

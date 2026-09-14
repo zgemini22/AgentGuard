@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Demo: an agent tries to read an SSH private key through a vulnerable
-# MCP server. Run directly, AgentGuard blocks it and logs it; a normal
-# file read still goes through; a file that merely *contains* a secret
-# (rather than being one) gets its output redacted instead of blocked
-# outright; and fetching a poisoned web page gets the whole response
-# blocked as a suspected prompt injection; and the audit log itself is
-# hash-chained, so editing a past entry after the fact is detectable.
+# MCP server. Run directly, AgentGuard blocks it and logs it — under the
+# conventional argument name and under a renamed one the server's
+# schema describes; a normal file read still goes through; a file that
+# merely *contains* a secret (rather than being one) gets its output
+# redacted instead of blocked outright; fetching a poisoned web page
+# gets the whole response blocked as a suspected prompt injection;
+# `agentguard report` says what the session touched; and the audit log
+# itself is hash-chained, so editing a past entry after the fact is
+# detectable.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -29,6 +32,16 @@ printf '%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"$WORKDIR/.ssh/id_rsa\"}}}" \
   | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+
+echo
+echo "=== 2b) With AgentGuard: the same read through read_document(file_location=...) — a tool whose"
+echo "        argument isn't called 'path' — is blocked too, because the proxy read the server's schema ==="
+printf '%s\n%s\n%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"read_document\",\"arguments\":{\"file_location\":\"$WORKDIR/.ssh/id_rsa\"}}}" \
+  | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py \
+  | grep -v '"tools"'
 
 echo
 echo "=== 3) With AgentGuard: a normal file read still works ==="
@@ -66,8 +79,8 @@ printf '%s\n%s\n' \
   | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 echo
-echo "=== Audit log ==="
-cat "$AUDIT_LOG"
+echo "=== 7b) What did all of that touch? agentguard report, from the audit log alone ==="
+python3 -m agentguard.cli report "$AUDIT_LOG"
 
 echo
 echo "=== 8) Verifying the audit log's hash chain ==="
@@ -83,10 +96,11 @@ path = sys.argv[1]
 with open(path) as f:
     lines = [l for l in f if l.strip()]
 
-entry = json.loads(lines[0])
+index = next(i for i, l in enumerate(lines) if json.loads(l).get("event") == "policy_decision")
+entry = json.loads(lines[index])
 print(f"before: allowed={entry['allowed']}")
 entry["allowed"] = True
-lines[0] = json.dumps(entry) + "\n"
+lines[index] = json.dumps(entry) + "\n"
 
 with open(path, "w") as f:
     f.writelines(lines)

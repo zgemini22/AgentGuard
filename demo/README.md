@@ -11,10 +11,19 @@ purposes:
   `agentguard_demo.cast`.
 - **`vulnerable_server.py`** — the intentionally-unrestricted MCP-style
   server both scripts wrap: a `read_file` tool with no path
-  restrictions, and a `fetch_url` tool returning two fixed, canned
-  pages (a poisoned one, a clean one) with no real network access.
+  restrictions, a `read_document` tool that does the same under an
+  argument named `file_location` (the rename bypass 0.1 fell for), a
+  `fetch_url` tool returning two fixed, canned pages (a poisoned one, a
+  clean one) with no real network access, a `screenshot` tool returning
+  an image, and `resources/read` / `prompts/get` handlers so the
+  non-`tools/call` inspection paths can be exercised.
 
 ## Watching the recording
+
+_The recording linked below was made with AgentGuard 0.1 and shows
+scenarios 1–10 of that version. `run_demo.sh` and `record_demo.sh` now
+also show the renamed-argument block (2b) and `agentguard report` (7b);
+re-record per the instructions at the bottom to refresh it._
 
 Watch it online, no install needed:
 **[asciinema.org/a/cYpJRwcAOB9mTeSj](https://asciinema.org/a/cYpJRwcAOB9mTeSj)**

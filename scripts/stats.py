@@ -19,7 +19,11 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CORE_MODULES = ["policy.py", "redact.py", "injection.py", "audit.py", "proxy.py"]
+CORE_MODULES = [
+    "policy.py", "classify.py", "validate.py", "session.py", "grants.py",
+    "redact.py", "injection.py", "normalize.py",
+    "audit.py", "report.py", "approval.py", "proxy.py",
+]
 
 
 def count_default_policy_rules() -> dict:
@@ -70,7 +74,7 @@ def main() -> int:
     print(f"  TOTAL: {total_rules}")
 
     print()
-    print(f"=== core module line count (policy/redact/injection/audit/proxy) ===")
+    print("=== core module line count (everything in agentguard/ except cli.py and __init__.py) ===")
     print(f"  {core_lines} lines across {len(CORE_MODULES)} files")
 
     print()
