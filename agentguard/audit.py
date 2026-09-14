@@ -11,14 +11,22 @@ only ever one writer (this process) and the point isn't to agree on a
 canonical history, just to make silent tampering with an existing one
 detectable.
 
-What this does *not* protect against: an attacker who can rewrite the
-whole file is free to recompute every hash from scratch and produce a
-self-consistent forged chain. Tamper-evidence here means "you can't
-sneak in a single edit without invalidating everything after it," not
-"the file is cryptographically bound to anything outside itself." Real
-tamper-*proofing* would mean periodically publishing the chain's head
-hash somewhere the attacker doesn't control (a separate host, a
-transparency log, ...) — out of scope for v1.
+What the chain alone does *not* protect against: an attacker who can
+rewrite the whole file is free to recompute every hash from scratch
+and produce a self-consistent forged chain. Tamper-evidence here means
+"you can't sneak in a single edit without invalidating everything
+after it," not "the file is cryptographically bound to anything
+outside itself."
+
+Anchoring is the primitive that closes that gap — partially, and only
+with the user's help. An anchor is `(entry count, head hash)` copied
+out of the log at some moment (`agentguard anchor`, or the periodic
+`anchor_file`) and kept where the log's attacker can't reach: a
+different host, a chat message to yourself, an append-only store.
+`verify-audit --anchor` then checks the chain still passes through
+it. A forged chain can't match an anchor it never saw. What this code
+cannot do is put the anchor out of reach for you; an anchor file on
+the same disk as the log is a convenience, not a guarantee.
 """
 
 from __future__ import annotations
@@ -29,7 +37,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 from .policy import Decision
 
@@ -50,53 +58,150 @@ class VerificationResult:
     valid: bool
     entry_count: int
     error: Optional[str] = None
+    anchors_checked: int = 0
+    head_hash: str = GENESIS_HASH
 
 
-def verify_audit_log(path: str) -> VerificationResult:
+@dataclass(frozen=True)
+class Anchor:
+    """A (count, head-hash) pair copied out of the log at some point
+    and kept somewhere the log's attacker can't reach. `count` is
+    optional: a bare hash just has to appear somewhere in the chain."""
+    hash: str
+    count: Optional[int] = None
+
+    @classmethod
+    def parse(cls, text: str) -> "Anchor":
+        """Accepts `<hash>`, `<count> <hash>`, or `<ts> <count> <hash>`
+        (an anchor-file line)."""
+        parts = text.split()
+        if not parts:
+            raise ValueError("empty anchor")
+        digest = parts[-1].lower()
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError(f"not a sha256 hex digest: {parts[-1]!r}")
+        count = None
+        if len(parts) >= 2:
+            try:
+                count = int(parts[-2])
+            except ValueError:
+                raise ValueError(f"not an entry count: {parts[-2]!r}")
+            if count < 1:
+                raise ValueError(f"entry count must be positive: {count}")
+        return cls(digest, count)
+
+
+def read_anchor_file(path: str) -> List[Anchor]:
+    anchors = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                anchors.append(Anchor.parse(line))
+    return anchors
+
+
+def verify_audit_log(path: str, anchors: Sequence[Anchor] = ()) -> VerificationResult:
     """Walks the whole log and recomputes the chain from GENESIS_HASH,
     checking prev_hash linkage and each entry's own hash. Stops at the
     first problem it finds — a hash chain is only as good as its weakest
-    link, so there's no value in cataloguing every entry after a break."""
-    p = Path(path)
-    if not p.exists():
-        return VerificationResult(valid=True, entry_count=0)
+    link, so there's no value in cataloguing every entry after a break.
 
+    With `anchors`, also checks that the chain passes through each one:
+    entry #count must have exactly that hash (or, for a bare hash, some
+    entry must). That's what catches a log rewritten from scratch with
+    a fresh self-consistent chain — the one thing the chain alone
+    can't — provided the anchor was kept out of the attacker's reach."""
+    p = Path(path)
+    hashes: List[str] = []
     expected_prev = GENESIS_HASH
     count = 0
-    with p.open("r") as f:
-        for line_no, raw_line in enumerate(f, start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                return VerificationResult(False, count, f"line {line_no}: not valid JSON")
+    if p.exists():
+        with p.open("r") as f:
+            for line_no, raw_line in enumerate(f, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    return VerificationResult(False, count, f"line {line_no}: not valid JSON")
 
-            if "hash" not in entry or "prev_hash" not in entry:
-                return VerificationResult(False, count, f"line {line_no}: missing hash/prev_hash field")
-            if entry["prev_hash"] != expected_prev:
+                if "hash" not in entry or "prev_hash" not in entry:
+                    return VerificationResult(False, count, f"line {line_no}: missing hash/prev_hash field")
+                if entry["prev_hash"] != expected_prev:
+                    return VerificationResult(
+                        False, count,
+                        f"line {line_no}: prev_hash does not match the preceding entry's hash — chain broken",
+                    )
+                if compute_entry_hash(entry) != entry["hash"]:
+                    return VerificationResult(False, count, f"line {line_no}: hash does not match entry contents — entry was modified")
+
+                expected_prev = entry["hash"]
+                count += 1
+                hashes.append(entry["hash"])
+
+    for anchor in anchors:
+        if anchor.count is not None:
+            if anchor.count > count:
                 return VerificationResult(
                     False, count,
-                    f"line {line_no}: prev_hash does not match the preceding entry's hash — chain broken",
+                    f"anchor says entry #{anchor.count} exists but the log has only {count} — log truncated?",
+                    head_hash=expected_prev,
                 )
-            if compute_entry_hash(entry) != entry["hash"]:
-                return VerificationResult(False, count, f"line {line_no}: hash does not match entry contents — entry was modified")
+            if hashes[anchor.count - 1] != anchor.hash:
+                return VerificationResult(
+                    False, count,
+                    f"anchor mismatch at entry #{anchor.count}: log has {hashes[anchor.count - 1][:16]}..., "
+                    f"anchor says {anchor.hash[:16]}... — log rewritten since the anchor was taken",
+                    head_hash=expected_prev,
+                )
+        elif anchor.hash not in hashes:
+            return VerificationResult(
+                False, count,
+                f"anchor hash {anchor.hash[:16]}... appears nowhere in the chain — log rewritten or truncated "
+                "since the anchor was taken",
+                head_hash=expected_prev,
+            )
 
-            expected_prev = entry["hash"]
-            count += 1
-
-    return VerificationResult(valid=True, entry_count=count)
+    return VerificationResult(True, count, anchors_checked=len(anchors), head_hash=expected_prev)
 
 
 class AuditLog:
-    def __init__(self, path: str = "agentguard_audit.log"):
+    def __init__(
+        self,
+        path: str = "agentguard_audit.log",
+        anchor_file: Optional[str] = None,
+        anchor_every: int = 100,
+    ):
         self.path = Path(path)
         self._lock = threading.Lock()
-        self._last_hash = self._load_last_hash()
+        self._last_hash, self._count = self._load_tail()
         # Stamped onto every entry once a session begins, so entries
         # from different runs sharing one log file can be told apart.
         self.session_id: Optional[str] = None
+        # Optional: every `anchor_every` entries, append "<ts> <count>
+        # <head-hash>" to `anchor_file`. Only worth anything if that
+        # file is somewhere the log's attacker can't also edit — a
+        # different host, an append-only store — which is the user's
+        # job, not this code's. See `agentguard anchor`.
+        self.anchor_file = anchor_file
+        self.anchor_every = anchor_every
+
+    def head(self) -> Tuple[int, str]:
+        """(entries so far, hash of the last one) — what an anchor is."""
+        with self._lock:
+            return self._count, self._last_hash
+
+    def write_anchor(self) -> str:
+        """Appends the current head to the anchor file now, regardless
+        of anchor_every. Returns the line written."""
+        count, digest = self.head()
+        line = f"{time.time():.3f} {count} {digest}"
+        assert self.anchor_file is not None
+        with open(self.anchor_file, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        return line
 
     def begin_session(self, session) -> dict:
         """Stamps every subsequent entry with the session id and writes
@@ -111,10 +216,11 @@ class AuditLog:
         entry = {"ts": time.time(), "event": "session_end", **session.end_metadata(exit_code)}
         return self._append(entry)
 
-    def _load_last_hash(self) -> str:
+    def _load_tail(self) -> Tuple[str, int]:
         if not self.path.exists():
-            return GENESIS_HASH
+            return GENESIS_HASH, 0
         last_hash = GENESIS_HASH
+        count = 0
         with self.path.open("r") as f:
             for line in f:
                 line = line.strip()
@@ -125,7 +231,8 @@ class AuditLog:
                 except json.JSONDecodeError:
                     continue
                 last_hash = entry.get("hash", last_hash)
-        return last_hash
+                count += 1
+        return last_hash, count
 
     def record(self, tool_name: str, arguments: dict, decision: Decision) -> dict:
         entry = {
@@ -231,4 +338,8 @@ class AuditLog:
             with self.path.open("a") as f:
                 f.write(json.dumps(entry, sort_keys=True) + "\n")
             self._last_hash = entry["hash"]
+            self._count += 1
+            if self.anchor_file and self._count % self.anchor_every == 0:
+                with open(self.anchor_file, "a", encoding="utf-8") as f:
+                    f.write(f"{time.time():.3f} {self._count} {self._last_hash}\n")
         return entry

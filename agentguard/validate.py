@@ -222,6 +222,10 @@ POLICY_SCHEMA: Dict[str, Check] = {
     # The grants.yaml overlay `always` answers are written to. Unset
     # means `always` behaves as `session`.
     "grants_file": _is_str,
+    # Periodic anchoring of the audit chain's head: every anchor_every
+    # entries, "<ts> <count> <head-hash>" is appended to anchor_file.
+    "anchor_file": _is_str,
+    "anchor_every": _is_positive_int,
     "file_access": _category(_is_str),
     "command_exec": _category(_is_regex),
     "network": _category(_is_str),

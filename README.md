@@ -297,12 +297,29 @@ agentguard verify-audit path/to/agentguard_audit.log
 prints `OK: N entries verified, hash chain intact.` and exits 0, or
 `TAMPERED: <where and how>` and exits 1 on the first break it finds.
 
-This is tamper-*evidence*, not tamper-*proofing*: it makes silently
-editing an existing log detectable, but an attacker who can rewrite the
-whole file can recompute every hash and produce a self-consistent forged
-chain from scratch. Actual tamper-proofing would mean periodically
-publishing the chain's head hash somewhere outside the attacker's
-reach — out of scope for v1.
+The chain alone is tamper-*evidence*, not tamper-*proofing*: it makes
+silently editing an existing log detectable, but an attacker who can
+rewrite the whole file can recompute every hash and produce a
+self-consistent forged chain from scratch.
+
+**Anchoring** is the primitive for that case. An anchor is the chain's
+head — `<entry count> <hash>` — copied out at some moment and kept
+where the log's attacker can't reach: another host, an append-only
+store, a message to yourself.
+
+```bash
+agentguard anchor agentguard_audit.log            # prints e.g. "412 9f3c...e1"
+agentguard verify-audit agentguard_audit.log --anchor "412 9f3c...e1"
+```
+
+A rewritten log can't pass through an anchor it never saw; the second
+command says `TAMPERED: anchor mismatch at entry #412`. Set
+`anchor_file:` (and `anchor_every: N`, default 100) in the policy to
+have the proxy append the head automatically as it runs, and check
+with `verify-audit --anchor-file`. What AgentGuard cannot do is put
+the anchor out of reach for you — an anchor file on the same disk as
+the log is a convenience, not a guarantee, and the docs say so on
+purpose.
 
 ## What did the agent touch?
 

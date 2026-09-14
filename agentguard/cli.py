@@ -4,7 +4,8 @@
     agentguard check-policy [--config policies/default.yaml]
                             [--tools tools-list.json]
                             [--probe TOOL '{"arg": "value"}']
-    agentguard verify-audit <audit-log-path>
+    agentguard verify-audit <audit-log-path> [--anchor "<count> <hash>"] [--anchor-file <path>]
+    agentguard anchor <audit-log-path> [--write <anchor-file>]
     agentguard report <audit-log-path> [--session ID] [--json]
     agentguard approve --socket <path>      # answer the proxy's `ask` verdicts
 """
@@ -15,6 +16,7 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 from typing import List, Optional
 
 import yaml
@@ -27,7 +29,7 @@ from .approval import (
     supports_unix_sockets,
     terminal_prompt,
 )
-from .audit import AuditLog, verify_audit_log
+from .audit import Anchor, AuditLog, read_anchor_file, verify_audit_log
 from .grants import GrantStore
 from .injection import InjectionDetector
 from .policy import PolicyEngine
@@ -81,6 +83,22 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-audit", help="Verify a hash-chained audit log for tampering"
     )
     verify_parser.add_argument("audit_log", help="Path to the audit log file to verify")
+    verify_parser.add_argument(
+        "--anchor", action="append", default=[], metavar="ANCHOR",
+        help='An anchor to check the chain against: "<count> <hash>" as printed by `agentguard anchor`, '
+             "or a bare hash. May be repeated.",
+    )
+    verify_parser.add_argument(
+        "--anchor-file", metavar="PATH",
+        help="A file of anchors, one per line (the policy's anchor_file, or one you kept elsewhere)",
+    )
+
+    anchor_parser = subparsers.add_parser(
+        "anchor",
+        help="Print the audit chain's current head — <count> <hash> — to keep somewhere the log's attacker can't reach",
+    )
+    anchor_parser.add_argument("audit_log", help="Path to the audit log file")
+    anchor_parser.add_argument("--write", metavar="ANCHOR_FILE", help="Also append it to this anchor file")
 
     approve_parser = subparsers.add_parser(
         "approve",
@@ -122,7 +140,11 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     policy = PolicyEngine(raw_config)
     redactor = SecretRedactor.from_config(raw_config)
     injection_detector = InjectionDetector.from_config(raw_config)
-    audit = AuditLog(args.audit_log)
+    audit = AuditLog(
+        args.audit_log,
+        anchor_file=raw_config.get("anchor_file"),
+        anchor_every=int(raw_config.get("anchor_every", 100)),
+    )
     session = Session.new(server_cmd, policy.classifier, policy_path=args.config)
     approver = _build_approver(raw_config, session)
     proxy = MCPProxy(
@@ -291,13 +313,37 @@ def _check_policy(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     return 0 if decision.allowed else PROBE_DENIED_EXIT
 
 
-def _verify_audit(args: argparse.Namespace) -> int:
-    result = verify_audit_log(args.audit_log)
+def _verify_audit(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    anchors = []
+    try:
+        anchors.extend(Anchor.parse(text) for text in args.anchor)
+        if args.anchor_file:
+            anchors.extend(read_anchor_file(args.anchor_file))
+    except ValueError as e:
+        parser.error(f"bad anchor: {e}")
+    except OSError as e:
+        parser.error(f"could not read anchor file: {e}")
+
+    result = verify_audit_log(args.audit_log, anchors)
     if result.valid:
-        print(f"OK: {result.entry_count} entries verified, hash chain intact.")
+        anchored = f", {result.anchors_checked} anchor(s) matched" if anchors else ""
+        print(f"OK: {result.entry_count} entries verified, hash chain intact{anchored}.")
         return 0
     print(f"TAMPERED: {result.error} (verified {result.entry_count} entries before the break)")
     return 1
+
+
+def _anchor(args: argparse.Namespace) -> int:
+    result = verify_audit_log(args.audit_log)
+    if not result.valid:
+        print(f"TAMPERED: {result.error} — refusing to anchor a broken chain")
+        return 1
+    line = f"{result.entry_count} {result.head_hash}"
+    print(line)
+    if args.write:
+        with open(args.write, "a", encoding="utf-8") as f:
+            f.write(f"{time.time():.3f} {line}\n")
+    return 0
 
 
 def _report(args: argparse.Namespace) -> int:
@@ -318,7 +364,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "check-policy":
         return _check_policy(args, parser)
     if args.command == "verify-audit":
-        return _verify_audit(args)
+        return _verify_audit(args, parser)
+    if args.command == "anchor":
+        return _anchor(args)
     if args.command == "report":
         return _report(args)
     if args.command == "approve":

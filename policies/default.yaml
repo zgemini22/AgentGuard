@@ -34,6 +34,15 @@ unclassified_arguments: allow
 # `session`. Each grant is one scope (tool:category:rule-or-value).
 # grants_file: agentguard_grants.yaml
 
+# Periodic anchoring of the audit chain: every anchor_every entries the
+# proxy appends "<ts> <count> <head-hash>" to anchor_file. Verify with
+# `agentguard verify-audit <log> --anchor-file <file>`. An anchor only
+# catches a rewritten log if the attacker couldn't also edit the
+# anchor — put this file somewhere else (another host, an append-only
+# store), or use `agentguard anchor` and keep the line yourself.
+# anchor_file: /somewhere/else/agentguard_anchors.txt
+# anchor_every: 100
+
 file_access:
   enabled: true
   deny_patterns:
