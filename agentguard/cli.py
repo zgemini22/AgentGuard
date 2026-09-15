@@ -211,8 +211,11 @@ def _print_effective_policy(path: str, config: dict, out) -> None:
         if allow:
             summary += f", default_action: {default_action}"
         print(f"{category}: {status}, {summary}", file=out)
-        for pattern in deny:
-            print(f"  deny   {pattern}", file=out)
+        for entry in deny:
+            if isinstance(entry, dict):
+                print(f"  {entry.get('action', 'deny'):<6} {entry['pattern']}", file=out)
+            else:
+                print(f"  deny   {entry}", file=out)
         for pattern in allow:
             print(f"  allow  {pattern}", file=out)
         if allow and default_action == "allow":

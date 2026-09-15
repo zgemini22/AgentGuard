@@ -118,3 +118,12 @@ def test_check_policy_probe_reports_ask(tmp_path, capsys):
     assert code == 4
     assert "decision: ASK  category=file_access  matched_rule=**/.env" in out
     assert "needs an approval channel" in out
+
+
+def test_check_policy_prints_ask_entries_by_action(tmp_path, capsys):
+    policy = tmp_path / "p.yaml"
+    policy.write_text("file_access:\n  deny_patterns:\n    - '**/.ssh/**'\n    - pattern: '**/.env'\n      action: ask\n")
+    assert main(["check-policy", "--config", str(policy)]) == 0
+    out = capsys.readouterr().out
+    assert "  deny   **/.ssh/**" in out
+    assert "  ask    **/.env" in out

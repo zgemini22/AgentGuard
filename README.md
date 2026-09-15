@@ -484,7 +484,7 @@ including right before quoting a number anywhere outside this repo.
 
 | | |
 |---|---|
-| Tests | 223 on Linux/macOS; 217 + 6 skipped on Windows, where the Unix-socket tests don't apply (`pytest -q \| tail -1`) |
+| Tests | 224 on Linux/macOS; 218 + 6 skipped on Windows, where the Unix-socket tests don't apply (`pytest -q \| tail -1`) |
 | Line coverage, `agentguard/` | 93% on Linux (`coverage run -m pytest -q && coverage report --include='agentguard/*'`) |
 | Built-in policy/detection rules shipped in `policies/default.yaml` | 34 total — 10 file-access deny patterns, 4 command deny patterns, 6 network allow patterns, 7 redaction rules, 7 injection-detection rules (`python3 scripts/stats.py`) |
 | Core module size | 3,289 lines across 12 files: `policy`, `classify`, `validate`, `session`, `grants`, `redact`, `injection`, `normalize`, `audit`, `report`, `approval`, `proxy` (`python3 scripts/stats.py`) |
