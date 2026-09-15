@@ -304,3 +304,38 @@ def _connect_when_listening(path, prompt):
     while not os.path.exists(path) and time.monotonic() < deadline:
         time.sleep(0.02)
     ApprovalClient(path, prompt, output=io.StringIO()).run(max_answers=2)
+
+
+
+@unix_only
+def test_proxy_degrades_to_deny_when_the_socket_cannot_be_created(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("SECRET=1")
+    config = {"file_access": {"deny_patterns": [{"pattern": "**/.env", "action": "ask"}]}}
+    path = socket_path(tmp_path)
+    with open(path, "w") as f:
+        f.write("not a socket")  # ApprovalServer.start() refuses to unlink this
+    try:
+        requests = [INIT, {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "read_file", "arguments": {"path": str(env)}},
+        }]
+        stdout = io.StringIO()
+        audit_path = str(tmp_path / "audit.log")
+        proxy = MCPProxy(
+            [sys.executable, DEMO_SERVER], PolicyEngine(config), AuditLog(audit_path),
+            stdin=io.StringIO("\n".join(json.dumps(r) for r in requests) + "\n"),
+            stdout=stdout, stderr=sys.__stderr__,
+            approver=ApprovalServer(ApprovalBroker(timeout=1), path),
+        )
+        proxy.run()  # must not raise
+        assert proxy.approver is None
+        response = next(json.loads(l) for l in stdout.getvalue().splitlines() if '"id": 2' in l)
+        assert "error" in response
+        assert "no approval channel configured" in response["error"]["message"]
+        with open(audit_path) as f:
+            decision = next(json.loads(l) for l in f if '"policy_decision"' in l)
+        assert decision["ask_resolution"] == "no_channel"
+        assert open(path).read() == "not a socket"  # left alone
+    finally:
+        os.unlink(path)

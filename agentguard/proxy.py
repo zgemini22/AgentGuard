@@ -211,7 +211,14 @@ class MCPProxy:
         if broker is not None and broker.grant_handler is None:
             broker.grant_handler = self._record_grant
         if hasattr(self.approver, "start"):
-            self.approver.start()
+            try:
+                self.approver.start()
+            except OSError as e:
+                # Same semantics as having no channel at all: every ask
+                # is denied and the audit entries say no_channel. Said
+                # out loud here so it isn't discovered from the log.
+                print(f"agentguard: approval channel unavailable ({e}); every `ask` verdict will be denied", file=self.stderr)
+                self.approver = None
         proc = subprocess.Popen(
             self.server_cmd,
             stdin=subprocess.PIPE,
