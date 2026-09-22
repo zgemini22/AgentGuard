@@ -1,13 +1,14 @@
 """CLI entry points:
 
-    agentguard run --config policies/default.yaml -- <mcp-server-cmd...>
-    agentguard check-policy [--config policies/default.yaml]
+    agentguard run [--config <policy.yaml>] -- <mcp-server-cmd...>
+    agentguard check-policy [--config <policy.yaml>]
                             [--tools tools-list.json]
                             [--probe TOOL '{"arg": "value"}']
     agentguard verify-audit <audit-log-path> [--anchor "<count> <hash>"] [--anchor-file <path>]
     agentguard anchor <audit-log-path> [--write <anchor-file>]
     agentguard report <audit-log-path> [--session ID] [--json]
     agentguard approve --socket <path>      # answer the proxy's `ask` verdicts
+    agentguard default-policy               # print the bundled policy, to start your own from
 """
 
 from __future__ import annotations
@@ -15,8 +16,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import time
+from pathlib import Path
 from typing import List, Optional
 
 import yaml
@@ -39,11 +42,20 @@ from .report import build_report, render_text
 from .session import Session
 from .validate import PolicyError, load_policy
 
+# The default policy ships inside the package, so `agentguard run` works
+# straight after `pip install` rather than only from a clone. It is the
+# only policy used implicitly: nothing is picked up from the current
+# directory, and --config is the only way to use a different one.
+DEFAULT_POLICY = str(Path(__file__).resolve().parent / "policies" / "default.yaml")
+
 # check-policy --probe exit code when the probed call would be denied.
 # Distinct from 1 (invalid policy) and 2 (usage error) so scripts can
 # tell "your policy is broken" from "your policy said no".
 PROBE_DENIED_EXIT = 3
 PROBE_ASK_EXIT = 4
+
+# Where 0.1.x looked for the policy when --config was omitted.
+LEGACY_DEFAULT_POLICY = os.path.join("policies", "default.yaml")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Run the proxy in front of an MCP server")
-    run_parser.add_argument("--config", default="policies/default.yaml", help="Path to policy YAML file")
+    run_parser.add_argument("--config", default=None, help="Path to policy YAML file (default: the policy bundled with agentguard)")
     run_parser.add_argument("--audit-log", default="agentguard_audit.log", help="Path to audit log file")
     run_parser.add_argument(
         "server_cmd",
@@ -66,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
         "check-policy",
         help="Validate a policy file, print the effective policy, and optionally probe a call against it",
     )
-    check_parser.add_argument("--config", default="policies/default.yaml", help="Path to policy YAML file")
+    check_parser.add_argument("--config", default=None, help="Path to policy YAML file (default: the policy bundled with agentguard)")
     check_parser.add_argument(
         "--tools",
         metavar="TOOLS_JSON",
@@ -114,7 +126,29 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--session", metavar="ID", help="Only the session whose id starts with ID")
     report_parser.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    subparsers.add_parser(
+        "default-policy",
+        help="Print the policy bundled with agentguard (the default for --config), to save and edit as your own",
+    )
+
     return parser
+
+
+def _resolve_config(args: argparse.Namespace, err=None) -> str:
+    """`--config` if given, else the bundled policy. 0.1.x read
+    `policies/default.yaml` from the working directory when --config was
+    omitted; if that file is here, say plainly that it is being ignored
+    rather than let an upgrade drop someone's edits without a word."""
+    if args.config is not None:
+        return args.config
+    if os.path.isfile(LEGACY_DEFAULT_POLICY):
+        print(
+            f"agentguard: using the policy bundled with agentguard ({DEFAULT_POLICY}). "
+            f"./{LEGACY_DEFAULT_POLICY} is not read unless you pass --config {LEGACY_DEFAULT_POLICY} "
+            "(0.1.x read it implicitly).",
+            file=err if err is not None else sys.stderr,
+        )
+    return DEFAULT_POLICY
 
 
 def _load_config_or_exit(path: str, parser: argparse.ArgumentParser) -> dict:
@@ -136,6 +170,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if not server_cmd:
         parser.error("missing MCP server command; usage: agentguard run --config <policy.yaml> -- <cmd...>")
 
+    args.config = _resolve_config(args)
     raw_config = _load_config_or_exit(args.config, parser)
     policy = PolicyEngine(raw_config)
     redactor = SecretRedactor.from_config(raw_config)
@@ -278,6 +313,7 @@ def _load_tools_json(path: str, parser: argparse.ArgumentParser):
 
 
 def _check_policy(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    args.config = _resolve_config(args)
     config = _load_config_or_exit(args.config, parser)
     engine = PolicyEngine(config)
     _print_effective_policy(args.config, config, sys.stdout)
@@ -374,6 +410,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _report(args)
     if args.command == "approve":
         return _approve(args, parser)
+    if args.command == "default-policy":
+        with open(DEFAULT_POLICY, "r", encoding="utf-8") as f:
+            sys.stdout.write(f.read())
+        return 0
     parser.error(f"unknown command: {args.command}")
     return 2
 

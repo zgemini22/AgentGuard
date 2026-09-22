@@ -83,7 +83,7 @@ audit log, which is itself hash-chained — see
 
 ## Policy engine
 
-Rules live in a YAML file (see `policies/default.yaml`) with three
+Rules live in a YAML file (see `agentguard/policies/default.yaml`) with three
 independent categories:
 
 - `file_access` — glob deny-patterns matched against path-like arguments
@@ -246,7 +246,8 @@ that names the problem, never a rule silently loaded as empty. Every
 error is reported at once.
 
 ```bash
-agentguard check-policy --config policies/default.yaml
+agentguard check-policy                          # the bundled default policy
+agentguard check-policy --config my-policy.yaml  # your own
 ```
 
 prints the effective policy — every pattern echoed back under its
@@ -269,7 +270,7 @@ whether a server's schemas are good enough to set
 ## Secret redaction
 
 A separate `redaction` section in the same YAML config (see
-`policies/default.yaml`) lists named regex rules — AWS/GitHub/Slack key
+`agentguard/policies/default.yaml`) lists named regex rules — AWS/GitHub/Slack key
 formats, PEM private key blocks, JWTs, a generic `key: "..."` pattern.
 Omit `rules` to fall back to `agentguard.redact.DEFAULT_RULES`. This is
 known-format matching, not entropy-based secret detection — no
@@ -278,7 +279,7 @@ rates against.
 
 ## Prompt-injection detection
 
-A separate `injection_detection` section (see `policies/default.yaml`)
+A separate `injection_detection` section (see `agentguard/policies/default.yaml`)
 lists named regex rules that look for instruction-shaped text in tool
 output — "ignore previous instructions", "you are now a...", "send the
 private key to...", pipe-to-shell, etc. Omit `rules` to fall back to
@@ -372,25 +373,33 @@ pip install -e .
 instead of pointing the agent at the server directly:
 
 ```bash
-agentguard run --config policies/default.yaml -- python3 your_mcp_server.py
+agentguard run -- python3 your_mcp_server.py
 ```
 
-The agent talks to the `agentguard` process exactly as it would talk to
+With no `--config`, the policy bundled with the package is used. The
+agent talks to the `agentguard` process exactly as it would talk to
 the wrapped server (same stdio transport, same tool schema) — only the
 policy/redaction/injection checks are new. In your agent's MCP client
 config, this usually just means swapping the server's launch command for
-`agentguard run --config policies/default.yaml -- <original command>`.
+`agentguard run -- <original command>`.
 
-**3. Adjust the policy to your environment, and check it.** Start from
-`policies/default.yaml`, add deny patterns for anything else sensitive
-on your machine, and add your own domains to the network allowlist —
-the shipped default only allows a handful (GitHub, Anthropic, PyPI).
-Then:
+**3. Adjust the policy to your environment, and check it.** Save the
+bundled policy as your own, add deny patterns for anything else
+sensitive on your machine, and add your own domains to the network
+allowlist — the shipped default allows only a few hosts (GitHub,
+Anthropic, PyPI, and the `example.com` hosts the demo uses). Then:
 
 ```bash
-agentguard check-policy --config policies/default.yaml
-agentguard check-policy --probe read_file '{"path": "~/.ssh/id_rsa"}'
+agentguard default-policy > my-policy.yaml
+agentguard check-policy --config my-policy.yaml
+agentguard check-policy --config my-policy.yaml --probe read_file '{"path": "~/.ssh/id_rsa"}'
+agentguard run --config my-policy.yaml -- python3 your_mcp_server.py
 ```
+
+Upgrading from 0.1.x: `./policies/default.yaml` in the working
+directory is no longer read when `--config` is omitted. Pass it
+explicitly if you had edited it; `agentguard` prints a warning when it
+finds one and is using the bundled policy instead.
 
 A typo is an error, not a silently empty rule; `--probe` shows what the
 engine would do with a call and why.
@@ -486,7 +495,7 @@ including right before quoting a number anywhere outside this repo.
 |---|---|
 | Tests | 224 on Linux/macOS; 218 + 6 skipped on Windows, where the Unix-socket tests don't apply (`pytest -q \| tail -1`) |
 | Line coverage, `agentguard/` | 93% on Linux (`coverage run -m pytest -q && coverage report --include='agentguard/*'`) |
-| Built-in policy/detection rules shipped in `policies/default.yaml` | 34 total — 10 file-access deny patterns, 4 command deny patterns, 6 network allow patterns, 7 redaction rules, 7 injection-detection rules (`python3 scripts/stats.py`) |
+| Built-in policy/detection rules shipped in `agentguard/policies/default.yaml` | 34 total — 10 file-access deny patterns, 4 command deny patterns, 6 network allow patterns, 7 redaction rules, 7 injection-detection rules (`python3 scripts/stats.py`) |
 | Core module size | 3,289 lines across 12 files: `policy`, `classify`, `validate`, `session`, `grants`, `redact`, `injection`, `normalize`, `audit`, `report`, `approval`, `proxy` (`python3 scripts/stats.py`) |
 | Runtime dependencies | 1 (PyYAML) (`python3 scripts/stats.py`) |
 

@@ -1,4 +1,4 @@
-"""Regression tests for the shipped policies/default.yaml.
+"""Regression tests for the shipped agentguard/policies/default.yaml.
 
 Everything else in this test suite exercises the engines against
 hand-built config dicts. This file is the one place that loads the
@@ -16,7 +16,7 @@ from agentguard.injection import InjectionDetector
 from agentguard.policy import PolicyEngine
 from agentguard.redact import SecretRedactor
 
-DEFAULT_POLICY_PATH = os.path.join(os.path.dirname(__file__), "..", "policies", "default.yaml")
+DEFAULT_POLICY_PATH = os.path.join(os.path.dirname(__file__), "..", "agentguard", "policies", "default.yaml")
 
 
 def load_default_config() -> dict:

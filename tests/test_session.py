@@ -9,7 +9,7 @@ from tests.test_proxy import run_proxy
 
 INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
 TOOLS_LIST = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
-DEFAULT_POLICY = os.path.join(os.path.dirname(__file__), "..", "policies", "default.yaml")
+DEFAULT_POLICY = os.path.join(os.path.dirname(__file__), "..", "agentguard", "policies", "default.yaml")
 
 
 def test_new_session_has_unique_id_and_policy_hash():

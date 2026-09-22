@@ -60,7 +60,7 @@ every single tool call, and I'd rather validate the *mechanism* — scan
 output, decide block-or-pass, log the decision, prove it works on a
 real attack scenario — against something deterministic and free to run
 first. Rules are also auditable in a way a classifier isn't: anyone
-using AgentGuard can read `policies/default.yaml` and know exactly
+using AgentGuard can read `agentguard/policies/default.yaml` and know exactly
 what will and won't trigger a block, which matters if you're the one
 debugging why a legitimate tool call got blocked at 2am.
 
@@ -93,7 +93,7 @@ instructions" — two qualifiers stacked before the noun — which is at
 least as natural a phrasing as either of the ones it does catch. I
 didn't notice this by reading the regex. I noticed it because I later
 wrote `tests/test_default_policy.py`, a regression suite that loads
-the actual shipped `policies/default.yaml` (not a hand-built test
+the actual shipped `agentguard/policies/default.yaml` (not a hand-built test
 config) and asserts each documented rule catches its named phrasing
 against realistic example text. That test failed on first run.
 

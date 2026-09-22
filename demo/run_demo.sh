@@ -31,7 +31,7 @@ echo "=== 2) With AgentGuard: same request, now blocked ==="
 printf '%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"$WORKDIR/.ssh/id_rsa\"}}}" \
-  | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+  | python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 echo
 echo "=== 2b) With AgentGuard: the same read through read_document(file_location=...) — a tool whose"
@@ -40,7 +40,7 @@ printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
   "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"read_document\",\"arguments\":{\"file_location\":\"$WORKDIR/.ssh/id_rsa\"}}}" \
-  | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py \
+  | python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py \
   | grep -v '"tools"'
 
 echo
@@ -48,14 +48,14 @@ echo "=== 3) With AgentGuard: a normal file read still works ==="
 printf '%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"$WORKDIR/notes.txt\"}}}" \
-  | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+  | python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 echo
 echo "=== 4) With AgentGuard: an allowed file read still gets its secret redacted ==="
 printf '%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"$WORKDIR/deploy_notes.txt\"}}}" \
-  | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+  | python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 echo
 echo "=== 5) Without AgentGuard: fetching a poisoned page hands the injected instruction straight to the agent ==="
@@ -69,14 +69,14 @@ echo "=== 6) With AgentGuard: the same poisoned page is blocked as a suspected p
 printf '%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch_url","arguments":{"url":"https://blog.example.com/cookie-recipe"}}}' \
-  | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+  | python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 echo
 echo "=== 7) With AgentGuard: a clean page still fetches normally ==="
 printf '%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch_url","arguments":{"url":"https://docs.example.com/readme"}}}' \
-  | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+  | python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 echo
 echo "=== 7b) What did all of that touch? agentguard report, from the audit log alone ==="

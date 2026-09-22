@@ -27,7 +27,7 @@ CORE_MODULES = [
 
 
 def count_default_policy_rules() -> dict:
-    with open(REPO_ROOT / "policies" / "default.yaml") as f:
+    with open(REPO_ROOT / "agentguard" / "policies" / "default.yaml") as f:
         config = yaml.safe_load(f)
 
     counts = {
@@ -68,7 +68,7 @@ def main() -> int:
 
     deps = count_runtime_dependencies()
 
-    print("=== policies/default.yaml rule counts ===")
+    print("=== agentguard/policies/default.yaml rule counts ===")
     for name, count in rule_counts.items():
         print(f"  {name}: {count}")
     print(f"  TOTAL: {total_rules}")

@@ -26,7 +26,7 @@ def run_stats_script() -> str:
 
 def test_stats_script_runs_clean():
     output = run_stats_script()
-    assert "policies/default.yaml rule counts" in output
+    assert "agentguard/policies/default.yaml rule counts" in output
     assert "core module line count" in output
     assert "runtime dependencies" in output
 

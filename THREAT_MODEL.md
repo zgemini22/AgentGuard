@@ -117,7 +117,7 @@ Stated here so nobody deploying this mistakes silence for a guarantee.
   complementary to, not replaceable by, AgentGuard.
 - **Novel injection phrasings the regex rules don't match.** Rule-based
   detection catches known shapes; an attacker who knows the rule set
-  (they're public, in `policies/default.yaml`) can phrase an
+  (they're public, in `agentguard/policies/default.yaml`) can phrase an
   instruction to slip past it. An LLM classification layer for
   borderline content is planned, not built — deliberately, for now:
   it makes the tool guessier, not more trustworthy, and the fixes in
@@ -147,7 +147,7 @@ Stated here so nobody deploying this mistakes silence for a guarantee.
   it can bypass the proxy entirely (e.g. by talking to the MCP server
   directly instead of through AgentGuard).
 - The policy YAML file itself is trusted and not attacker-writable. An
-  attacker who can edit `policies/default.yaml` doesn't need to bypass
+  attacker who can edit `agentguard/policies/default.yaml` doesn't need to bypass
   AgentGuard — they can just turn it off. This is also why operator
   grants never write to it: the `grants_file` overlay is the only
   thing AgentGuard writes at runtime besides the audit log, and it can

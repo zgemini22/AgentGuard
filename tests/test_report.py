@@ -16,7 +16,7 @@ from agentguard.session import Session
 from tests.test_proxy import DEMO_SERVER
 
 INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
-POLICY_PATH = os.path.join(os.path.dirname(__file__), "..", "policies", "default.yaml")
+POLICY_PATH = os.path.join(os.path.dirname(__file__), "..", "agentguard", "policies", "default.yaml")
 
 
 def run_session(audit_path, requests, config):

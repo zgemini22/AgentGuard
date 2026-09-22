@@ -61,7 +61,7 @@ run_and_show \
 header "2. Same request, now through AgentGuard: blocked before it reaches the server"
 run_and_show \
   "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"$WORKDIR/.ssh/id_rsa\"}}}" \
-  python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+  python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 header "2b. Same key via read_document(file_location=...) — the argument isn't called 'path'"
 note "The proxy read the server's tools/list schema, so the renamed argument is still a path."
@@ -69,19 +69,19 @@ printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
   "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"read_document\",\"arguments\":{\"file_location\":\"$WORKDIR/.ssh/id_rsa\"}}}" \
-  | python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py 2>&1 \
+  | python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py 2>&1 \
   | grep -v '"tools"' | while IFS= read -r line; do echo "$line" | jq -c . 2>/dev/null || echo "$line"; done
 sleep 1.5
 
 header "3. An ordinary file read still works — this isn't a blanket deny"
 run_and_show \
   "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"$WORKDIR/notes.txt\"}}}" \
-  python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+  python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 header "4. A file that just happens to CONTAIN a secret: allowed, but redacted"
 run_and_show \
   "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"$WORKDIR/deploy_notes.txt\"}}}" \
-  python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+  python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 header "5. Unprotected: agent fetches a page, poisoned instruction comes straight through"
 run_and_show \
@@ -91,12 +91,12 @@ run_and_show \
 header "6. Same fetch through AgentGuard: URL is allowed, output is blocked as injection"
 run_and_show \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch_url","arguments":{"url":"https://blog.example.com/cookie-recipe"}}}' \
-  python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+  python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 header "7. A clean page still fetches normally"
 run_and_show \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch_url","arguments":{"url":"https://docs.example.com/readme"}}}' \
-  python3 -m agentguard.cli run --config policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
+  python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 header "7b. What did all of that touch? agentguard report, from the audit log alone"
 python3 -m agentguard.cli report "$AUDIT_LOG" | head -40

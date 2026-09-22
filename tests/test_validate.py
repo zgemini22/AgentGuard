@@ -19,7 +19,7 @@ def test_empty_and_minimal_configs_are_valid():
 
 
 def test_shipped_default_policy_is_valid():
-    assert load_policy(os.path.join(REPO_ROOT, "policies", "default.yaml"))
+    assert load_policy(os.path.join(REPO_ROOT, "agentguard", "policies", "default.yaml"))
 
 
 def test_typo_in_section_key_is_an_error_with_a_hint():
