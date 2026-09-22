@@ -41,9 +41,9 @@ def ask_decision(rule="**/.env", category="file_access", value="/app/.env"):
 
 def test_grant_scope_is_tool_category_rule_or_value():
     assert grant_scope("read_file", ask_decision()) == "read_file:file_access:**/.env"
-    miss = Decision(False, "network", "host 'x' is not in the network allowlist", None,
-                    [ClassifiedArgument("url", "https://docs.python.org/3", "network", "key_name")], action=ASK)
-    assert grant_scope("fetch", miss) == "fetch:network:https://docs.python.org/3"
+    engine = PolicyEngine({"network": {"allow_patterns": ["*.github.com"], "default_action": "ask"}})
+    miss = engine.evaluate("fetch", {"url": "https://docs.python.org/3"})
+    assert grant_scope("fetch", miss) == "fetch:network:docs.python.org"
     assert grant_scope("t", Decision(False, "budget", "x", None, [], action=ASK)) == "t:budget:*"
 
 

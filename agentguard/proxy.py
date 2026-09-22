@@ -46,7 +46,7 @@ from typing import IO, Dict, List, Optional, Tuple
 from .audit import AuditLog
 from .grants import Grant
 from .injection import InjectionDetector
-from .policy import ASK, Decision, PolicyEngine
+from .policy import ASK, Decision, PolicyEngine, grant_scopes
 from .redact import SecretRedactor
 from .session import Session
 
@@ -313,13 +313,14 @@ class MCPProxy:
         grants overlay when one is configured; otherwise it can only be
         a session grant, and the audit entry says so."""
         store = self.policy.grant_store
-        if verdict == "always" and store.persistent:
-            store.add(Grant.now(request.scope, request.tool, session.id))
-            self.audit.record_grant(request.tool, request.scope, "always", store.path)
-            return
-        session.grants.add(request.scope)
-        note = None if verdict == "session" else "always requested but no grants_file is configured"
-        self.audit.record_grant(request.tool, request.scope, "session", None, note)
+        for scope in grant_scopes(request.tool, decision):
+            if verdict == "always" and store.persistent:
+                store.add(Grant.now(scope, request.tool, session.id))
+                self.audit.record_grant(request.tool, scope, "always", store.path)
+                continue
+            session.grants.add(scope)
+            note = None if verdict == "session" else "always requested but no grants_file is configured"
+            self.audit.record_grant(request.tool, scope, "session", None, note)
 
     def _resolve_ask(self, name: str, arguments: dict, decision: Decision) -> Decision:
         """Turns an `ask` verdict into allow or deny. With no approval

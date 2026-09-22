@@ -104,6 +104,13 @@ class Decision:
     # How an `ask` was resolved: no_channel, timeout, denied_by_operator,
     # approved_once, approved_for_session, approved_always, granted.
     ask_resolution: Optional[str] = None
+    # The specific thing that tripped the rule: the host or canonical path
+    # that missed an allowlist, the value a pattern matched, the argument
+    # keys nothing could classify. What a grant scope is keyed on.
+    subject: Optional[str] = None
+    # For an `ask` raised by several rules in one call: each of them. A
+    # grant covers the call only if it covers every part.
+    parts: List["Decision"] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.action:
@@ -137,17 +144,32 @@ class Decision:
         return out
 
 
-def grant_scope(tool: str, decision: Decision) -> str:
-    """What a `session`/`always` answer would grant: this tool, this
-    category, and the rule that tripped — or, for an allowlist miss
-    with no rule, the specific value that missed (the host, the path).
-    Deliberately narrow: approving one host never approves the next."""
+def _single_scope(tool: str, decision: Decision) -> str:
     if decision.matched_rule:
         return f"{tool}:{decision.category}:{decision.matched_rule}"
-    for arg in decision.arguments:
-        if arg.category == decision.category:
-            return f"{tool}:{decision.category}:{arg.value}"
+    if decision.subject:
+        return f"{tool}:{decision.category}:{decision.subject}"
     return f"{tool}:{decision.category}:*"
+
+
+def grant_scopes(tool: str, decision: Decision) -> List[str]:
+    """Every scope a `session`/`always` answer to this decision grants:
+    this tool, this category, and the rule that tripped — or, for an
+    allowlist miss, the specific host or canonical path that missed (not
+    whichever argument of that category came first). Deliberately
+    narrow: approving one host never approves the next."""
+    parts = decision.parts or [decision]
+    scopes: List[str] = []
+    for part in parts:
+        scope = _single_scope(tool, part)
+        if scope not in scopes:
+            scopes.append(scope)
+    return scopes
+
+
+def grant_scope(tool: str, decision: Decision) -> str:
+    """The scopes of grant_scopes() as one string, for display."""
+    return " & ".join(grant_scopes(tool, decision))
 
 
 @dataclass
@@ -478,12 +500,16 @@ class PolicyEngine:
         decision = self._evaluate(tool_name, arguments, session)
         if decision.action != ASK:
             return decision
-        # An ask the operator has already answered for this scope.
-        scope = grant_scope(tool_name, decision)
-        if session is not None and scope in session.grants:
-            return decision.resolved(True, "granted", f"ask: covered by session grant '{scope}'")
-        if scope in self.grant_store.scopes():
-            return decision.resolved(True, "granted", f"ask: covered by persistent grant '{scope}'")
+        # An ask the operator has already answered — for every scope it
+        # involves. A grant never reaches a hard deny: _evaluate returns a
+        # deny whenever any rule denies, before an ask is considered.
+        scopes = grant_scopes(tool_name, decision)
+        session_grants = session.grants if session is not None else set()
+        persistent = self.grant_store.scopes()
+        if all(s in session_grants or s in persistent for s in scopes):
+            kind = "session" if all(s in session_grants for s in scopes) else "persistent"
+            return decision.resolved(
+                True, "granted", f"ask: covered by {kind} grant '{' & '.join(scopes)}'")
         return decision
 
     def _evaluate(self, tool_name: str, arguments: dict, session=None) -> Decision:
@@ -506,6 +532,10 @@ class PolicyEngine:
         checked_categories: List[str] = []
         touched_categories: List[str] = []
         unclassified_keys: List[str] = []
+        # Every argument is judged, and every rule that objects is kept:
+        # returning at the first objection let an `ask` on one argument
+        # hide a hard deny on another, which an approval then let through.
+        objections: List[Decision] = []
         for arg in classified:
             if arg.category is None:
                 if arg.key not in unclassified_keys:
@@ -520,26 +550,28 @@ class PolicyEngine:
                 checked_categories.append(arg.category)
             decision = self._check(arg.category, arg.value, rule)
             if decision is not None:
-                decision.arguments = classified
                 if rules.overridden:
                     decision.reason += f" (under tools.{tool_name} override)"
-                return decision
+                objections.append(decision)
 
         if unclassified_keys and rules.unclassified_arguments != ALLOW:
-            return Decision(
+            objections.append(Decision(
                 False, UNCLASSIFIED,
                 f"tool '{tool_name}' argument(s) {', '.join(repr(k) for k in unclassified_keys)} "
                 f"could not be classified and unclassified_arguments is '{rules.unclassified_arguments}'",
-                arguments=classified, action=rules.unclassified_arguments,
-            )
+                action=rules.unclassified_arguments,
+                subject=",".join(sorted(unclassified_keys)),
+            ))
         if session is not None:
-            decision = (
-                self._session_budget_exceeded(session, touched_categories)
-                or self._check_sequences(session, classified, touched_categories)
-            )
-            if decision is not None:
-                decision.arguments = classified
-                return decision
+            for decision in (
+                self._session_budget_exceeded(session, touched_categories),
+                self._check_sequences(session, classified, touched_categories),
+            ):
+                if decision is not None:
+                    objections.append(decision)
+
+        if objections:
+            return self._combine(objections, classified)
         if checked_categories:
             return Decision(
                 allowed=True,
@@ -560,6 +592,26 @@ class PolicyEngine:
             category="none",
             reason=f"tool '{tool_name}' call has no string arguments for the policy to classify",
             arguments=classified,
+        )
+
+    @staticmethod
+    def _combine(objections: List[Decision], classified: List[ClassifiedArgument]) -> Decision:
+        """Any deny wins. Otherwise every ask is combined into one, so the
+        operator answers once and a grant has to cover all of them."""
+        for decision in objections:
+            if decision.action == DENY:
+                decision.arguments = classified
+                return decision
+        asks = [d for d in objections if d.action == ASK]
+        if len(asks) == 1:
+            asks[0].arguments = classified
+            return asks[0]
+        first = asks[0]
+        return Decision(
+            False, first.category,
+            "; ".join(d.reason for d in asks),
+            first.matched_rule, arguments=classified, action=ASK,
+            subject=first.subject, parts=asks,
         )
 
     def _check(self, category: str, value: str, rule: _CategoryRule) -> Optional[Decision]:
@@ -585,7 +637,7 @@ class PolicyEngine:
                 return Decision(
                     False, category,
                     f"value {shown} matches {action} pattern '{pattern}'",
-                    pattern, action=action,
+                    pattern, action=action, subject=subject,
                 )
         if not rule.allow_patterns or allowed_by_any(rule.allow_patterns):
             return None
@@ -594,7 +646,7 @@ class PolicyEngine:
             return Decision(
                 False, category,
                 f"{noun} '{subject}' is not in the {category} allowlist",
-                action=rule.default_action,
+                action=rule.default_action, subject=subject,
             )
         return None
 
