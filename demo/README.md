@@ -26,7 +26,7 @@ also show the renamed-argument block (2b) and `agentguard report` (7b);
 re-record per the instructions at the bottom to refresh it._
 
 Watch it online, no install needed:
-**[asciinema.org/a/cYpJRwcAOB9mTeSj](https://asciinema.org/a/cYpJRwcAOB9mTeSj)**
+**[asciinema.org/a/1265133](https://asciinema.org/a/1265133)**
 
 Or play the file in this repo locally — same recording, an
 [asciicast v2](https://docs.asciinema.org/manual/asciicast/v2/), a

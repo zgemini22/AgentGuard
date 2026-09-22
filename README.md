@@ -48,7 +48,10 @@ on both sides.
 **Requests** (agent -> server): a `tools/call` request is evaluated
 against the policy before it is forwarded, and so is a `resources/read`
 (its `uri` goes through the same rules — a `file://` URI is judged as a
-file path). Everything else is passed through untouched.
+file path). Everything else is passed through untouched. A JSON-RPC
+batch, a line that isn't a JSON object, or a gated method whose
+`params`/`arguments` aren't an object is refused rather than forwarded
+unexamined.
 
 - **allowed** — forwarded to the real server.
 - **denied** — the real server never sees the request; the agent gets a
@@ -73,9 +76,22 @@ agent:
 Both scanners look at a normalized form of the text (zero-width
 characters stripped, homoglyphs folded, NFKC, base64 payloads decoded)
 so the cheap encoding tricks don't work; redaction still edits only the
-matched spans of the original. Content that isn't text — images, audio,
-binary blobs — is passed through and logged as `unscannable_content`,
-so the audit trail says where the scanners had no visibility.
+matched spans of the original. A text holding more base64 than the
+decoder will take (4 million decoded characters) is not delivered partly
+unchecked: it is blocked as `scan_limit_exceeded`. Content that isn't
+text — images, audio, binary blobs — is passed through and logged as
+`unscannable_content`, so the audit trail says where the scanners had
+no visibility.
+
+Which request a response answers is decided conservatively: only a
+JSON-RPC response (a `result` or `error`, no `method`) is matched to
+the agent's pending requests, ids are compared the way clients compare
+them (`2` and `"2"` are the same), and a response that matches nothing
+pending is still scanned — every string in it — instead of passed
+through. `error.message` and `error.data` are scanned too. Requests the
+server sends to the client (sampling, roots, ping) keep their own ids
+and are passed through. The transport is UTF-8 on both sides whatever
+the machine's locale is.
 
 Every policy decision, redaction, and injection block is recorded in the
 audit log, which is itself hash-chained — see
@@ -86,26 +102,44 @@ audit log, which is itself hash-chained — see
 Rules live in a YAML file (see `agentguard/policies/default.yaml`) with three
 independent categories:
 
-- `file_access` — glob deny-patterns matched against path-like arguments
-  (`path`, `file`, `filename`, ...). Default policy blocks `~/.ssh/**`,
-  `.env` files, AWS credentials, `*.pem`/`*.key`, etc.
+- `file_access` — globs matched against the path a path-like argument
+  names (`path`, `file`, `filename`, ...), not the raw string: a
+  relative name is resolved against the wrapped server's working
+  directory, `..` is collapsed, `~` expanded and symlinks resolved, and
+  on macOS/Windows matching ignores case. So `.env`, `./.env`,
+  `sub/../.env` and a symlink to `.env` are all judged as the file they
+  open. Default policy blocks `~/.ssh/**`, `.env` files, AWS
+  credentials, `*.pem`/`*.key`, etc.
 - `command_exec` — regex deny-patterns matched against command-like
   arguments (`command`, `cmd`, `script`, `shell`). Default policy blocks
-  `rm -rf /`, `curl | bash`-style pipe-to-shell, fork bombs.
-- `network` — glob allowlist matched against the hostname of URL-like
+  `rm` aimed at `/` or `~`, `curl`/`wget` piped into a shell or
+  interpreter, fork bombs.
+- `network` — glob allowlist matched against the host of URL-like
   arguments (`url`, `uri`, `host`, `domain`); anything not on the list is
-  denied when `default_action: deny`.
+  denied when `default_action: deny`. The host is taken only when it is
+  unambiguous: a value with a backslash, whitespace or control
+  characters, or percent-encoding in the authority — where parsers
+  disagree about the host — is denied rather than guessed at, and a
+  value with no scheme is read as `host[/path]`, never matched as a
+  whole string.
 
-Which category an argument falls into is decided per tool from the
-`inputSchema` the server declares in its `tools/list` response (an
-explicit `format: uri`, the property's description), falling back to
-key-name conventions (`path`, `url`, `command`, ...) and their tokens
-(`file_location`, `targetHost`) for servers with lazy schemas. The
-proxy reads the `tools/list` response on its way past — it isn't
-modified — and holds any `tools/call` that arrives while a `tools/list`
-is still in flight, so a pipelining client can't get a call evaluated
-before its schema is known. Lists and nested objects are walked, so
-`paths: [...]` is checked element by element.
+Which category an argument falls into comes from the `inputSchema`
+the server declares in its `tools/list` response and from the argument's
+name: an explicit schema `format` (`uri`, `path`, ...), a well-known key
+name (`path`, `url`, `command`, ...), and every token of the name
+(`file_location`, `targetHost`, `script_path`). An argument is judged
+under *every* category those give it, and the most restrictive result
+wins — `script_path` is checked as a command and as a path. The
+property's description is a fallback for arguments none of those
+recognize. Independently of the name, a value that is itself an
+`http(s)`/`ws(s)`/`ftp(s)` URL is judged as network, and a `file://` URI
+as a file path. The proxy reads the `tools/list` response on its way
+past — it isn't modified — and holds any `tools/call` that arrives
+while a `tools/list` is still in flight, so a pipelining client can't
+get a call evaluated before its schema is known. Lists (at any depth)
+and nested objects are walked, so `paths: [...]` and
+`moves: [[src, dst]]` are checked element by element; `arguments` that
+aren't a JSON object are refused.
 
 An argument nothing recognizes is *unclassified*. The top-level
 `unclassified_arguments` key decides what happens then: `allow` (the
@@ -224,9 +258,12 @@ rather than pretending a rule said no. `check-policy --probe` reports
 it on.
 
 **What a grant covers.** `session` and `always` grant a *scope* —
-`tool:category:rule` (or `tool:category:value` for an allowlist miss),
-so approving `fetch` for one host says nothing about the next host,
-and approving `read_file` past `**/.env` says nothing about `*.pem`.
+`tool:category:rule`, or for an allowlist miss `tool:category:<the host
+or canonical path that missed>` — so approving `fetch` for one host says
+nothing about the next host, even in a call that also carries an
+allowlisted URL, and approving `read_file` past `**/.env` says nothing
+about `*.pem`. When one call trips several `ask` rules the operator
+answers once, and a grant covers the call only if it covers all of them.
 Session grants die with the session. `always` writes to a separate
 `grants_file:` overlay (`grants.yaml`), **never** to the policy file:
 the policy is the trust root, and a tool that edits its own trust
@@ -234,8 +271,10 @@ root under time pressure is a footgun. The overlay is loaded after the
 policy, listed separately by `check-policy`, and every grant is an
 audit entry so `report` shows "operator approved X at T." With no
 `grants_file` configured, `always` behaves as `session` and the audit
-entry says so. A grant only ever turns an `ask` into an allow — a hard
-deny never reached an operator, so nothing can be granted against it.
+entry says so. A grant only ever turns an `ask` into an allow: every
+argument of a call is judged and any hard deny wins, so a call that
+carries a denied value never reaches an operator and nothing can be
+granted against it.
 
 ### Validation and `check-policy`
 
@@ -297,20 +336,27 @@ built.
 Every entry AgentGuard writes carries `prev_hash` (the previous entry's
 sha256) and `hash` (sha256 of the entry's own fields plus `prev_hash`) —
 a hash chain, the same block-linking idea a blockchain uses, minus the
-consensus problem, since there's only ever one writer. Editing, deleting,
-or reordering any past entry breaks the link to everything after it.
+consensus problem. Editing, deleting, or reordering a past entry breaks
+the link to everything after it. Several proxies can share one log:
+appends take an OS-level lock and re-read the chain's head under it, so
+they extend one chain.
 
 ```bash
 agentguard verify-audit path/to/agentguard_audit.log
 ```
 
-prints `OK: N entries verified, hash chain intact.` and exits 0, or
-`TAMPERED: <where and how>` and exits 1 on the first break it finds.
+prints `OK: N entries verified, hash chain intact.` and exits 0,
+`TAMPERED: <where and how>` and exits 1 on the first break it finds, or
+`MISSING` and exits 1 if there is no log at that path.
 
-The chain alone is tamper-*evidence*, not tamper-*proofing*: it makes
-silently editing an existing log detectable, but an attacker who can
-rewrite the whole file can recompute every hash and produce a
-self-consistent forged chain from scratch.
+The chain alone is tamper-*evidence*, not tamper-*proofing*, and its
+limits are specific. It shows an entry edited without recomputing the
+hashes after it. It does **not** show entries deleted from the end (what
+is left is still a valid chain), correctly chained entries appended, or
+every hash recomputed after an edit — anyone who can write the file can
+do those. `verify-audit` says so when it can: it notes a log that doesn't
+end with a `session_end`, which is what a cut-off tail looks like (or a
+proxy still running).
 
 **Anchoring** is the primitive for that case. An anchor is the chain's
 head — `<entry count> <hash>` — copied out at some moment and kept
@@ -322,14 +368,16 @@ agentguard anchor agentguard_audit.log            # prints e.g. "412 9f3c...e1"
 agentguard verify-audit agentguard_audit.log --anchor "412 9f3c...e1"
 ```
 
-A rewritten log can't pass through an anchor it never saw; the second
-command says `TAMPERED: anchor mismatch at entry #412`. Set
-`anchor_file:` (and `anchor_every: N`, default 100) in the policy to
-have the proxy append the head automatically as it runs, and check
-with `verify-audit --anchor-file`. What AgentGuard cannot do is put
-the anchor out of reach for you — an anchor file on the same disk as
-the log is a convenience, not a guarantee, and the docs say so on
-purpose.
+A rewritten or cut-off log can't pass through an anchor it never saw;
+the second command says `TAMPERED: anchor mismatch at entry #412` (or
+`log truncated?`). An anchor covers the entries up to the point it was
+taken. Set `anchor_file:` in the policy to have the proxy append the
+head automatically at the start and end of every session and every
+`anchor_every` entries (default 100), so a finished session is covered
+to its last entry, and check with `verify-audit --anchor-file`. What
+AgentGuard cannot do is put the anchor out of reach for you — an anchor
+file on the same disk as the log is a convenience, not a guarantee, and
+the docs say so on purpose.
 
 ## What did the agent touch?
 
@@ -413,7 +461,7 @@ reviewable `grants_file`, never in the policy.
 **5. See it work before trusting it.** Run `./demo/run_demo.sh` (below)
 to watch the same engine block a real SSH-key read (under two different
 argument names), a poisoned-page injection, and the audit chain catching
-an edit — in about 30 seconds.
+an edit — in a couple of seconds.
 
 **6. Afterwards, ask what the agent did — and whether the record is
 intact:**
@@ -436,6 +484,8 @@ returns two fixed, canned pages (no real network access) — and shows:
 1. Without AgentGuard, a request for `~/.ssh/id_rsa` just returns the key.
 2. With AgentGuard in front of the same server, the same request is
    blocked and logged.
+   - The same key asked for through `read_document(file_location=...)`,
+     an argument that isn't called `path`, is blocked too.
 3. A normal file read still goes through unaffected.
 4. A file that merely *contains* a secret (an AWS key inside some notes)
    isn't blocked — the read is allowed, but the key is redacted from the
@@ -447,16 +497,19 @@ returns two fixed, canned pages (no real network access) — and shows:
    but the response is blocked as a suspected prompt injection and
    logged — the agent never sees the payload.
 7. A clean page still fetches normally.
+   - `agentguard report` then reconstructs the run from the audit log
+     alone: files touched, hosts contacted, what was blocked, redacted,
+     or withheld as an injection.
 8. `agentguard verify-audit` confirms the log's hash chain is intact.
 9. A past entry is edited directly in the file (e.g. flipping a denial
    to an allow).
 10. Verifying again catches it immediately, naming the exact line and
     what's wrong with it.
 
-Watch a recorded run of the same scenarios (paced, narrated, ~30s):
-**[asciinema.org/a/cYpJRwcAOB9mTeSj](https://asciinema.org/a/cYpJRwcAOB9mTeSj)**
-— or play [`demo/agentguard_demo.cast`](demo/agentguard_demo.cast)
-locally, see [`demo/README.md`](demo/README.md).
+Watch a recorded run (paced, narrated):
+**[asciinema.org/a/1265133](https://asciinema.org/a/1265133)** — or
+play [`demo/agentguard_demo.cast`](https://github.com/zgemini22/AgentGuard/blob/main/demo/agentguard_demo.cast)
+locally, see [`demo/README.md`](https://github.com/zgemini22/AgentGuard/blob/main/demo/README.md).
 
 ## Tests
 
@@ -474,8 +527,14 @@ the engines read is one the validator knows); the normalizer
 (zero-width, homoglyphs, NFKC, base64, and that redaction edits the
 original at the right spans); the redactor and injection detector;
 the audit log's hash chain (chaining, restart, edited / deleted /
-forged entries) and anchoring (a from-scratch rewrite caught, truncation
-caught); the approval broker on every platform and the Unix-socket
+forged entries, several writers on one log, a crash mid-line) and
+anchoring (a from-scratch rewrite caught, a cut-off tail caught by the
+session-end anchor); path canonicalization (relative and bare names,
+`..`, symlinks, case, Win32 name aliases) and unambiguous URL hosts;
+response correlation (ids of another type, reused ids, server-initiated
+requests, stray and malformed responses, batches); the scanners' limits
+and linear running time on adversarial input; the UTF-8 transport under
+a non-UTF-8 locale; the approval broker on every platform and the Unix-socket
 transport where AF_UNIX exists, including an end-to-end `ask` through
 the proxy with a real server and a real approver; `report` over a busy
 session and over a v1-era log; and end-to-end proxy tests for every
@@ -493,21 +552,19 @@ including right before quoting a number anywhere outside this repo.
 
 | | |
 |---|---|
-| Tests | 224 on Linux/macOS; 218 + 6 skipped on Windows, where the Unix-socket tests don't apply (`pytest -q \| tail -1`) |
+| Tests | 369 on Linux; 360 + 9 skipped on Windows, where the Unix-socket tests don't apply (`pytest -q \| tail -1`) |
 | Line coverage, `agentguard/` | 93% on Linux (`coverage run -m pytest -q && coverage report --include='agentguard/*'`) |
-| Built-in policy/detection rules shipped in `agentguard/policies/default.yaml` | 34 total — 10 file-access deny patterns, 4 command deny patterns, 6 network allow patterns, 7 redaction rules, 7 injection-detection rules (`python3 scripts/stats.py`) |
-| Core module size | 3,289 lines across 12 files: `policy`, `classify`, `validate`, `session`, `grants`, `redact`, `injection`, `normalize`, `audit`, `report`, `approval`, `proxy` (`python3 scripts/stats.py`) |
+| Built-in policy/detection rules shipped in the default policy (`agentguard default-policy`) | 34 total — 10 file-access deny patterns, 4 command deny patterns, 6 network allow patterns, 7 redaction rules, 7 injection-detection rules (`python3 scripts/stats.py`) |
+| Core module size | 3,917 lines across 13 files: `policy`, `classify`, `paths`, `validate`, `session`, `grants`, `redact`, `injection`, `normalize`, `audit`, `report`, `approval`, `proxy` (`python3 scripts/stats.py`) |
 | Runtime dependencies | 1 (PyYAML) (`python3 scripts/stats.py`) |
 
 ## Further reading
 
-- [`THREAT_MODEL.md`](THREAT_MODEL.md) — what's protected, what isn't,
+- [`THREAT_MODEL.md`](https://github.com/zgemini22/AgentGuard/blob/main/THREAT_MODEL.md) — what's protected, what isn't,
   and the assumptions the design rests on.
-- [`docs/COMPARISON.md`](docs/COMPARISON.md) — how this relates to
+- [`docs/COMPARISON.md`](https://github.com/zgemini22/AgentGuard/blob/main/docs/COMPARISON.md) — how this relates to
   garak, promptfoo, and the existing ecosystem of MCP-specific runtime
   gateways.
-- [`docs/blog/`](docs/blog/) — write-ups on the design decisions and
+- [`docs/blog/`](https://github.com/zgemini22/AgentGuard/tree/main/docs/blog/) — write-ups on the design decisions and
   the injection detector's false-positive/false-negative tradeoffs.
-- [`docs/ROADMAP-0.2.md`](docs/ROADMAP-0.2.md) — the plan 0.2 was
-  built to, and why the LLM classifier wasn't it.
-- [`CHANGELOG.md`](CHANGELOG.md) — what changed, release by release.
+- [`CHANGELOG.md`](https://github.com/zgemini22/AgentGuard/blob/main/CHANGELOG.md) — what changed, release by release.

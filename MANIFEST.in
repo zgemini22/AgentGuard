@@ -1,0 +1,10 @@
+# The sdist runs its own test suite: unpack it, `pip install .`, `pytest`.
+# That needs the test helpers and scripts/stats.py as well as
+# tests/test_*.py, which is all the default file list picked up.
+include LICENSE README.md CHANGELOG.md THREAT_MODEL.md
+recursive-include agentguard/policies *.yaml
+recursive-include tests *.py
+recursive-include scripts *.py
+recursive-include docs *.md
+recursive-include demo *.py *.sh *.md *.cast
+global-exclude *.py[cod]

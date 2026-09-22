@@ -11,13 +11,22 @@ classifiers = [
     "Intended Audience :: Developers",
     "Topic :: Security",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
 ]
 dependencies = [
     "PyYAML>=6.0",
 ]
 
 [project.urls]
+Homepage = "https://github.com/zgemini22/AgentGuard"
 Repository = "https://github.com/zgemini22/AgentGuard"
+Changelog = "https://github.com/zgemini22/AgentGuard/blob/main/CHANGELOG.md"
 Issues = "https://github.com/zgemini22/AgentGuard/issues"
 
 [project.scripts]
@@ -29,6 +38,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["agentguard*"]
+exclude = ["tests*"]
 
 [tool.setuptools.package-data]
 agentguard = ["policies/*.yaml"]

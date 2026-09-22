@@ -47,20 +47,21 @@ actually reason about deploying.
 
 | Threat | Mitigation | Where |
 |---|---|---|
-| Agent reads `~/.ssh`, `.env`, cloud credentials via a file-reading tool | Glob deny-list (and optional allow-list) on path-classified tool-call arguments, including `file://` URIs and `resources/read` | `PolicyEngine` (file_access) |
+| Agent reads `~/.ssh`, `.env`, cloud credentials via a file-reading tool | Glob deny-list (and optional allow-list) on path-classified tool-call arguments, including `file://` URIs and `resources/read`, matched against the canonical path: relative names resolved against the server's working directory, `..` collapsed, symlinks resolved, case ignored on macOS/Windows, Win32 name aliases stripped | `PolicyEngine` (file_access), `paths` |
 | Agent runs `rm -rf /`, pipes a remote script into a shell, forkbombs | Regex deny-list on command-classified arguments | `PolicyEngine` (command_exec) |
-| Agent's tools talk to arbitrary/attacker-controlled hosts | Hostname allow-list on URL-classified arguments, default-deny | `PolicyEngine` (network) |
-| A server names its path argument `file_location` (or anything else) so the key-name rules never look at it | Arguments are classified from the tool's declared `inputSchema` (format, name tokens, description) as well as key names; `unclassified_arguments: deny` refuses any call with an argument nothing recognized | `ArgumentClassifier`, `PolicyEngine` |
+| Agent's tools talk to arbitrary/attacker-controlled hosts | Hostname allow-list on URL-classified arguments, default-deny; a value whose host parsers could disagree about (backslash, whitespace, control characters, percent-encoding in the authority) is denied | `PolicyEngine` (network), `url_host` |
+| A server names its path argument `file_location` (or anything else) so the key-name rules never look at it | Arguments are classified from the tool's declared `inputSchema` format, the key name and every name token, and judged under every category that applies (description as a fallback); a value that is itself a URL is judged as network whatever its key; nested lists are walked; `unclassified_arguments: deny` refuses any call with an argument nothing recognized | `ArgumentClassifier`, `PolicyEngine` |
 | One tool needs a narrower policy than the rest | `tools.<name>:` overrides, field-level, over the global rules | `PolicyEngine` |
 | "Read one more file, then one more" / a tool returns a 50 MB blob | Session budgets: per-category call ceilings, per-call and total output byte ceilings | `Session`, `PolicyEngine` |
 | Two individually-fine calls that together exfiltrate: read `.env`, then POST | Three fixed sequence rules — no network after a sensitive read, no exec after a fetch, a ceiling on distinct directories | `Session`, `PolicyEngine` |
-| A strict policy blocks legitimate work and gets loosened to allow-all | The `ask` verdict: an operator decides over a Unix socket (deny / once / session / always), with a timeout that denies | `ApprovalBroker`, `ApprovalServer`, `agentguard approve` |
+| A strict policy blocks legitimate work and gets loosened to allow-all | The `ask` verdict: an operator decides over a Unix socket (deny / once / session / always), with a timeout that denies. Any hard deny in the same call wins over an ask; a grant is scoped to the rule or to the exact host/path that missed | `ApprovalBroker`, `ApprovalServer`, `agentguard approve` |
+| A server gets a result past the output scanners by how it shapes the response (an id of another JSON type, a message reusing the id first, a request of its own with a colliding id, a malformed line that stops the reader) | Only JSON-RPC responses are correlated, ids compared as clients compare them; a response matching nothing pending is scanned generically; error objects are scanned; a message that can't be handled is withheld and the reader keeps going | `MCPProxy` |
 | Tool output contains a known-format secret that shouldn't reach the agent's context (leaked `.env`, a token in an API response) | Regex matching on known secret formats over *normalized* text, output masked in place at the original spans | `SecretRedactor`, `normalize` |
 | Tool output (a fetched page, a read file, a resource, a prompt) contains hidden instructions trying to redirect the agent — "ignore previous instructions," "send the private key to..." | Regex matching on instruction-shaped text over normalized text; a hit withholds the *entire* result | `InjectionDetector`, `normalize` |
-| The injected instruction or secret is hidden with zero-width characters, homoglyphs, fullwidth letters, or base64 | Normalization before scanning: NFKC, invisible characters stripped, a fixed homoglyph table folded, base64 runs decoded one level | `normalize` |
+| The injected instruction or secret is hidden with zero-width characters, homoglyphs, fullwidth letters, or base64 | Normalization before scanning: NFKC, invisible characters stripped, a fixed homoglyph table folded, base64 runs decoded one level; past the decode limit the result is blocked, not delivered partly unchecked | `normalize` |
 | A policy typo silently disables a rule | Strict validation on load: unknown keys, non-compiling regexes and wrong types are startup errors; `check-policy` echoes the effective policy and probes calls | `validate`, `agentguard check-policy` |
-| Someone edits, deletes, or reorders a past audit log entry to hide what happened | Hash chain (`prev_hash`/`hash` per entry); `agentguard verify-audit` detects the first break | `AuditLog` |
-| Someone rewrites the *whole* log with a fresh, self-consistent chain | Anchoring: `agentguard anchor` / `anchor_file:` record the chain's head; `verify-audit --anchor` checks the chain still passes through it | `AuditLog`, `agentguard anchor` |
+| Someone edits, deletes, or reorders a past audit log entry without recomputing the hashes after it | Hash chain (`prev_hash`/`hash` per entry); `agentguard verify-audit` detects the first break | `AuditLog` |
+| Someone deletes the last entries, appends forged ones, or rewrites the log with a fresh, self-consistent chain | Anchoring: `agentguard anchor` / `anchor_file:` (written at every session's start and end, and every `anchor_every` entries) record the chain's head; `verify-audit --anchor` checks the chain still passes through it. Only entries up to the last anchor are covered, and only if the anchor is out of the attacker's reach | `AuditLog`, `agentguard anchor` |
 | "The agent ran for twenty minutes and I have no record of what it touched" | `agentguard report`: files by directory, hosts, commands, every block/redaction/injection/grant, per session | `report` |
 
 ## In scope, with caveats
@@ -88,15 +89,19 @@ be worse than the old disclaimer.
   in general. A sequence that isn't one of those three shapes is still
   judged one call at a time. The three are a fixed menu on purpose: a
   fourth is a design conversation, not a config key.
-- **Tamper-proofing the audit log.** Anchoring makes a from-scratch
-  rewrite detectable *if the anchor is somewhere the attacker can't
+- **Tamper-proofing the audit log.** Without an anchor, the chain
+  cannot show entries deleted from the end, correctly chained entries
+  appended, or hashes recomputed after an edit — anyone who can write
+  the file can do those. Anchoring makes them detectable for the entries
+  up to the last anchor, *if the anchor is somewhere the attacker can't
   also edit*. AgentGuard can't put it there for you. An `anchor_file`
   on the same disk as the log is a convenience; an anchor pasted into
   a message to yourself, or appended on another host, is the real
   thing.
 - **Denial of service.** Output-size and call-count budgets bound how
-  much a session can consume. There's still no timeout on a hanging
-  tool call and no rate limit on a fast-looping one.
+  much a session can consume, and the shipped scanners run in time
+  linear in the size of what they scan. There's still no timeout on a
+  hanging tool call and no rate limit on a fast-looping one.
 - **The `ask` channel on Windows.** It needs Unix domain sockets. On a
   platform without them the proxy says so on stderr at startup and
   every `ask` is denied, recorded as `ask_resolution: no_channel`.
@@ -149,9 +154,10 @@ Stated here so nobody deploying this mistakes silence for a guarantee.
 - The policy YAML file itself is trusted and not attacker-writable. An
   attacker who can edit `agentguard/policies/default.yaml` doesn't need to bypass
   AgentGuard — they can just turn it off. This is also why operator
-  grants never write to it: the `grants_file` overlay is the only
-  thing AgentGuard writes at runtime besides the audit log, and it can
-  only ever turn an `ask` into an allow.
+  grants never write to it. At runtime AgentGuard writes only the audit
+  log (and on Windows its `.lock` sidecar), the `anchor_file` if one is
+  configured, the approval socket, and the `grants_file` overlay — which
+  can only ever turn an `ask` into an allow.
 - The approval socket is only as private as its file permissions
   (0600) and the machine's user separation. Anyone who can connect to
   it can approve calls; anyone who can replace the file at that path

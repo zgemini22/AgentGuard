@@ -1,12 +1,86 @@
 # Changelog
 
-## 0.2.0 — 2026-09-13
+## Unreleased
+
+_Nothing yet._
+
+## 0.2.0 — 2026-09-22
 
 From a stateless per-call filter to a least-privilege session runtime.
-Built to [`docs/ROADMAP-0.2.md`](docs/ROADMAP-0.2.md); the direction
-was "make the guarantees the README already claims actually hold,
-then give the proxy a session and a human in the loop" — not the LLM
-injection classifier, on purpose.
+The direction was "make the guarantees the README already claims
+actually hold, then give the proxy a session and a human in the loop" —
+not the LLM injection classifier, on purpose.
+
+### Fixed before release
+
+A full audit of the release candidate found that several of the
+guarantees above, and some that 0.1.1 already claimed, did not hold.
+Each is fixed with a regression test that fails without the fix.
+
+- **File rules match the canonical path.** Globs were matched against
+  the raw argument string, so a bare or relative name (`.env`, `id_rsa`,
+  `server.pem`) passed every `**/…` pattern in the default policy, `..`
+  escaped a `/project/**` allowlist, and symlinks, case (macOS/Windows)
+  and Win32 aliases (`.env.`, `.env::$DATA`) did the rest. Values are
+  now resolved against the server's working directory, normalized, and
+  matched in resolved-symlink form too. The sensitive-read sequence rule
+  uses the same matching. (Affects 0.1.1.)
+- **Network hosts are taken only when unambiguous.** A backslash in the
+  authority made `urlparse` and the HTTP clients servers use disagree
+  about the host, and a value with no scheme was matched as a whole
+  string. Such values are now denied, and schemeless values are read as
+  `host[/path]`. (Affects 0.1.1.)
+- **Arguments are judged under every category they could belong to.**
+  `script_path` was command-only, a URL under `destination` was judged
+  only by file globs, and lists of lists weren't walked at all (not even
+  under `unclassified_arguments: deny`). Non-object `arguments` are
+  refused.
+- **Any deny wins, and grants cover exactly what was approved.** An
+  `ask` on one argument could hide a hard deny on another, which an
+  approval then let through; an allowlist-miss grant was keyed on the
+  first argument of the category, not the one that missed.
+- **Every response is inspected.** A result could skip injection
+  blocking, redaction, the output budget and the audit log if the
+  server echoed the id as another JSON type, sent a message reusing the
+  id first, or sent a request of its own with a colliding id; one
+  malformed line stopped inspection of everything after it. Error
+  objects are now scanned too. (Affects 0.1.1.)
+- **UTF-8 on the wire whatever the locale.** On Windows without UTF-8
+  mode (cp936, cp1252) non-ASCII text crashed the proxy, or let an AWS
+  key through redaction.
+- **The scanners fail closed and run in linear time.** base64 decoding
+  stopped after 64 runs and delivered the rest unscanned; now a text
+  over the decode limit is blocked. Several shipped patterns were
+  quadratic: 100 KB of crafted text took over 300 s to scan and stalled
+  every later response; it now takes about 0.1 s. Rules with literal
+  spaces use `\s+`, and the pipe-to-shell and `rm` rules cover more
+  spellings (still 34 rules).
+- **Audit log.** With `anchor_file` set, the head is anchored at every
+  session's start and end, so cutting off a finished session's tail is
+  caught. Several proxies on one log extend one chain instead of
+  forking it. A missing log is `MISSING`, not `OK`. The limits of the
+  chain without an anchor are stated in the README, the threat model and
+  `verify-audit`'s own output. (The tail limit affects 0.1.1.)
+- The approval socket that can't be created degrades to deny, with a
+  line on stderr, instead of stopping the proxy (79e7edf); every `ask`
+  is then recorded as `ask_resolution: no_channel`.
+- `check-policy` lists `{pattern, action: ask}` deny entries under the
+  action they take instead of as a raw dict under `deny` (49841bb).
+
+### Packaging
+
+- The default policy ships inside the package, and `agentguard run` /
+  `check-policy` use it when `--config` is omitted — they failed after
+  `pip install` in 0.1.0 and 0.1.1 unless run from a clone. Nothing is
+  read from the working directory implicitly; a `./policies/default.yaml`
+  (what 0.1.x read) gets a warning instead of being dropped silently.
+  `agentguard default-policy` prints the bundled policy to start your
+  own from.
+- The sdist includes what its tests need and runs them; the wheel
+  installs no tests. Project URLs, per-version Python classifiers.
+- CI: Python 3.9–3.13 on Linux, macOS, Windows with UTF-8 mode, Windows
+  under the locale code page, and a job that builds the wheel and runs it
+  from an empty directory.
 
 ### Guarantees that now hold
 
@@ -96,8 +170,7 @@ injection classifier, on purpose.
   "in scope, with caveats" — the caveats are spelled out.
 - Demo server gains `read_document(file_location=…)`, `screenshot`,
   `resources/read` and `prompts/get`; `run_demo.sh` shows the rename
-  bypass caught and `agentguard report`. The asciinema recording is
-  from 0.1 and needs re-recording.
+  bypass caught and `agentguard report`.
 - CI adds a Windows runner (socket tests skip there; the degrade path
   runs).
 

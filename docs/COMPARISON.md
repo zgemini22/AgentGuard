@@ -97,7 +97,7 @@ precise about which:
   include a synchronous approve/deny on a pending call. Treat this as
   "AgentGuard has one," not "the others don't," until someone checks.
 - **Minimal footprint, on purpose — less so than it was.** One runtime
-  dependency (PyYAML), ~3,300 lines across twelve modules
+  dependency (PyYAML), ~3,900 lines across thirteen modules
   (`python3 scripts/stats.py`), no dashboard, no SaaS component, no
   account system. 0.1 was ~680 lines in five modules; 0.2 roughly
   quintupled that to make the existing guarantees hold (schema

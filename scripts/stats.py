@@ -20,7 +20,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CORE_MODULES = [
-    "policy.py", "classify.py", "validate.py", "session.py", "grants.py",
+    "policy.py", "classify.py", "paths.py", "validate.py", "session.py", "grants.py",
     "redact.py", "injection.py", "normalize.py",
     "audit.py", "report.py", "approval.py", "proxy.py",
 ]
