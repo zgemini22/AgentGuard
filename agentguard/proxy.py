@@ -30,6 +30,16 @@ Content that can't be scanned as text — images, audio, binary `blob`
 resources — is passed through and logged as such, so the audit trail
 shows where the scanners had no visibility instead of implying they
 looked.
+
+Which request a server message answers is decided conservatively. Only
+a response (a `result` or `error`, no `method`) is correlated with the
+client's pending requests; a request or notification from the server
+has its own id space and never touches them. Ids are compared the way
+clients compare them (`2` and `"2"` are the same id). A response that
+matches no pending request is still inspected — every string in it —
+rather than passed through, and error objects are scanned too. A
+message that can't be handled is withheld, never forwarded unchecked,
+and never stops the thread that inspects the ones after it.
 """
 
 from __future__ import annotations
@@ -60,6 +70,32 @@ RESPONSE_WAIT_SECONDS = 30.0
 
 # Methods whose responses carry content the output scanners look at.
 INSPECTED_METHODS = ("tools/call", "resources/read", "prompts/get")
+
+
+INVALID_REQUEST_ERROR_CODE = -32600
+
+
+def id_key(value):
+    """The key a JSON-RPC id is correlated under. Clients compare ids
+    loosely enough that a server echoing `"2"` for `2` still gets its
+    result accepted, so the proxy must treat them as the same id too —
+    otherwise that result would match nothing here and skip inspection.
+    Works for any JSON value, including unhashable ones."""
+    if isinstance(value, bool) or value is None:
+        return ("j", json.dumps(value))
+    if isinstance(value, (int, str)):
+        return ("v", str(value))
+    if isinstance(value, float) and value.is_integer():
+        return ("v", str(int(value)))
+    return ("j", json.dumps(value, sort_keys=True))
+
+
+def is_response(message: dict) -> bool:
+    """A JSON-RPC response: no `method`, and a `result` or an `error`.
+    Anything with a `method` is a request or notification from the
+    server, whose id is in the *server's* id space and must never be
+    matched against the client's pending requests."""
+    return "method" not in message and ("result" in message or "error" in message)
 
 
 @dataclass
@@ -114,6 +150,14 @@ def _string_leaves(node, slots: List[TextSlot]) -> None:
                 slots.append(TextSlot(node, index))
             else:
                 _string_leaves(value, slots)
+
+
+def find_all_strings(node) -> List[TextSlot]:
+    """Every string leaf. Used for results whose method isn't known (a
+    response that matched no pending request) and for error objects."""
+    slots: List[TextSlot] = []
+    _string_leaves(node, slots)
+    return slots
 
 
 def find_content(method: str, result) -> Tuple[List[TextSlot], List[str]]:
@@ -246,10 +290,14 @@ class MCPProxy:
 
     def _pump_client_to_server(self, proc: subprocess.Popen) -> None:
         for line in self.stdin:
-            line = line.rstrip("\n")
+            line = line.rstrip("\r\n")
             if not line:
                 continue
-            forwarded_line = self._handle_client_line(line)
+            try:
+                forwarded_line = self._handle_client_line(line)
+            except Exception as e:  # never forward what couldn't be checked
+                print(f"agentguard: dropped a client message that could not be checked ({e!r})", file=self.stderr)
+                forwarded_line = None
             if forwarded_line is None:
                 continue
             proc.stdin.write(forwarded_line + "\n")
@@ -260,26 +308,54 @@ class MCPProxy:
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
-            return line
+            # Not JSON, so the policy can't judge it; a lenient server
+            # parser might still act on it. Not forwarded.
+            print("agentguard: dropped a client line that is not valid JSON", file=self.stderr)
+            return None
+        if isinstance(message, list):
+            # JSON-RPC batches aren't part of MCP; a call inside one would
+            # otherwise need judging element by element. Refused.
+            for item in message:
+                if isinstance(item, dict) and "id" in item and "method" in item:
+                    self._reject(item.get("id"), "JSON-RPC batch requests are not supported",
+                                 INVALID_REQUEST_ERROR_CODE)
+            return None
+        if not isinstance(message, dict):
+            print("agentguard: dropped a client message that is not a JSON object", file=self.stderr)
+            return None
 
         method = message.get("method")
         request_id = message.get("id")
-        params = message.get("params") or {}
+        params = message.get("params")
+        if params is None:
+            params = {}
 
         if method == "tools/list" and request_id is not None:
             with self._pending_lock:
-                self._pending_tools_list.add(request_id)
+                self._pending_tools_list.add(id_key(request_id))
             return line
+
+        if method in ("tools/call", "resources/read", "prompts/get") and not isinstance(params, dict):
+            self._reject(request_id, f"{method} params must be a JSON object", INVALID_REQUEST_ERROR_CODE)
+            return None
 
         if method == "tools/call":
             name = params.get("name", "<unknown>")
-            arguments = params.get("arguments") or {}
+            if not isinstance(name, str):
+                name = str(name)
+            arguments = params.get("arguments")
+            if arguments is None:
+                arguments = {}
             self._wait_for_pending_tools_list()
         elif method == "resources/read":
             # A resource read is a file or network access under another
             # name; the same rules apply to its uri.
             name = "resources/read"
-            arguments = {"uri": params.get("uri")}
+            uri = params.get("uri")
+            if not isinstance(uri, str):
+                self._reject(request_id, "resources/read uri must be a string", INVALID_REQUEST_ERROR_CODE)
+                return None
+            arguments = {"uri": uri}
         elif method == "prompts/get":
             # Nothing dangerous to gate on the way in; tracked so the
             # returned messages get scanned on the way out.
@@ -337,7 +413,7 @@ class MCPProxy:
         if request_id is None or not self._inspects_responses():
             return
         with self._pending_lock:
-            self._pending[request_id] = PendingRequest(method, name)
+            self._pending[id_key(request_id)] = PendingRequest(method, name)
 
     def _wait_for_pending_tools_list(self) -> None:
         self._wait_until(lambda: not self._pending_tools_list, SCHEMA_WAIT_SECONDS)
@@ -357,101 +433,151 @@ class MCPProxy:
                     return
                 self._pending_changed.wait(remaining)
 
-    def _reject(self, request_id, reason: str) -> None:
-        self.stdout.write(json.dumps(self._error_response(request_id, reason)) + "\n")
+    def _reject(self, request_id, reason: str, code: int = POLICY_VIOLATION_ERROR_CODE) -> None:
+        self.stdout.write(json.dumps(self._error_response(request_id, reason, code)) + "\n")
         self.stdout.flush()
 
     @staticmethod
-    def _error_response(request_id, reason: str) -> dict:
+    def _error_response(request_id, reason: str, code: int = POLICY_VIOLATION_ERROR_CODE) -> dict:
         return {
             "jsonrpc": "2.0",
             "id": request_id,
             "error": {
-                "code": POLICY_VIOLATION_ERROR_CODE,
+                "code": code,
                 "message": f"AgentGuard: blocked by policy — {reason}",
             },
         }
 
     def _pump_server_to_client(self, proc: subprocess.Popen) -> None:
         for line in proc.stdout:
-            self.stdout.write(self._handle_server_line(line))
-            self.stdout.flush()
+            try:
+                out = self._handle_server_line(line)
+            except Exception as e:
+                # Never forward what couldn't be inspected, and never let
+                # one bad line end this thread (which would stop every
+                # later response).
+                out = self._uninspectable(line, e)
+            if out:
+                self.stdout.write(out)
+                self.stdout.flush()
+
+    def _uninspectable(self, line: str, error: Exception) -> str:
+        print(f"agentguard: withheld a server message that could not be inspected ({error!r})", file=self.stderr)
+        try:
+            message = json.loads(line)
+        except (ValueError, TypeError):
+            return ""
+        if isinstance(message, dict) and "id" in message and is_response(message):
+            return json.dumps(self._error_response(message["id"], "the response could not be inspected")) + "\n"
+        return ""
 
     def _handle_server_line(self, line: str) -> str:
         """Returns the line to forward to the client, blocked/redacted as needed."""
-        stripped = line.rstrip("\n")
+        stripped = line.rstrip("\r\n")
         if not stripped:
             return line
         try:
             message = json.loads(stripped)
         except json.JSONDecodeError:
+            # Not JSON-RPC: a client can't take it as the answer to a call.
             return line
+        if isinstance(message, list):
+            # A batch of responses: each element is handled on its own.
+            out, changed = [], False
+            for item in message:
+                replaced = self._handle_server_message(item) if isinstance(item, dict) else None
+                changed = changed or replaced is not None
+                out.append(item if replaced is None else replaced)
+            return json.dumps(out) + "\n" if changed else line
+        if not isinstance(message, dict):
+            return line
+        replaced = self._handle_server_message(message)
+        return line if replaced is None else json.dumps(replaced) + "\n"
 
-        message_id = message.get("id")
+    def _handle_server_message(self, message: dict) -> Optional[dict]:
+        """None to forward the message as is, or the message to send
+        instead (blocked, redacted, or withheld)."""
+        if not is_response(message):
+            # A request or notification from the server (sampling, roots,
+            # ping, progress...). Its id is the server's own and says
+            # nothing about the client's pending calls.
+            return None
+
+        key = id_key(message.get("id"))
         with self._pending_changed:
-            is_tools_list = message_id in self._pending_tools_list
+            is_tools_list = key in self._pending_tools_list
             if is_tools_list:
                 result = message.get("result")
                 if isinstance(result, dict):
                     self.session.register_tools(result.get("tools"))
-                self._pending_tools_list.discard(message_id)
+                self._pending_tools_list.discard(key)
                 self._pending_changed.notify_all()
         if is_tools_list:
-            return line
+            return None
 
         if not self._inspects_responses():
-            return line
+            return None
 
         with self._pending_changed:
-            pending = self._pending.get(message_id)
-            if pending is None:
-                return line
+            pending = self._pending.pop(key, None)
             # Size first: a result over the per-call budget is withheld
             # before anything bothers to scan it, and only delivered
             # bytes count toward the session total. Counted before the
-            # request is dropped from pending, so a call waiting on
+            # pending entry is released, so a call waiting on
             # _wait_for_pending_responses sees the new total.
             over = None
             nbytes = 0
-            if "result" in message:
+            if pending is not None and "result" in message:
                 nbytes = len(json.dumps(message["result"]).encode("utf-8"))
                 over = self.policy.output_budget_exceeded(nbytes)
                 if over is None:
                     self.session.note_output(nbytes)
-            del self._pending[message_id]
             self._pending_changed.notify_all()
 
-        if "result" not in message:
-            return line
+        # A response that matches nothing the client is waiting on under
+        # an inspected method (an id of another type, a replayed id, an
+        # answer to initialize or ping) is still inspected — generically,
+        # every string in it — rather than passed through unchecked.
+        method = pending.method if pending is not None else None
+        name = pending.name if pending is not None else "<unmatched response>"
+
         if over is not None:
-            self.audit.record_budget_block(pending.name, pending.method, "max_output_bytes_per_call", nbytes)
-            return json.dumps(self._withheld_response(message, pending.method, over)) + "\n"
+            self.audit.record_budget_block(name, method or "unmatched", "max_output_bytes_per_call", nbytes)
+            return self._withheld_response(message, method, over)
 
         if not self._output_inspection_enabled():
-            return line
+            return None
 
         # Slots point into the message; work on a copy so a blocked or
         # redacted response is built without mutating what was parsed.
         message = copy.deepcopy(message)
-        slots, unscannable = find_content(pending.method, message.get("result"))
+        if "result" in message:
+            if method in INSPECTED_METHODS:
+                slots, unscannable = find_content(method, message.get("result"))
+            else:
+                slots, unscannable = find_all_strings(message.get("result")), []
+        else:
+            slots, unscannable = [], []
+        # Error objects carry server-chosen text to the agent too.
+        slots += find_all_strings(message.get("error"))
         if unscannable:
-            self.audit.record_unscannable(pending.name, pending.method, unscannable)
+            self.audit.record_unscannable(name, method or "unmatched", unscannable)
 
         injection_rules = self._check_injection(slots)
         if injection_rules:
-            self.audit.record_injection_block(pending.name, injection_rules, pending.method)
+            self.audit.record_injection_block(name, injection_rules, method or "unmatched")
             reason = (
                 "this tool output was blocked — suspected prompt injection "
                 f"(matched rules: {', '.join(injection_rules)})"
             )
-            return json.dumps(self._withheld_response(message, pending.method, reason)) + "\n"
+            return self._withheld_response(message, method, reason)
 
         redaction_rules = self._redact(slots)
         if not redaction_rules:
-            return line
+            return None
 
-        self.audit.record_redaction(pending.name, redaction_rules, pending.method)
-        return json.dumps(message) + "\n"
+        self.audit.record_redaction(name, redaction_rules, method or "unmatched")
+        return message
 
     def _check_injection(self, slots: List[TextSlot]) -> List[str]:
         if self.injection_detector is None or not self.injection_detector.enabled:
@@ -461,10 +587,10 @@ class MCPProxy:
             matched_rules.extend(self.injection_detector.scan(slot.text))
         return sorted(set(matched_rules))
 
-    def _withheld_response(self, message: dict, method: str, reason: str) -> dict:
+    def _withheld_response(self, message: dict, method: Optional[str], reason: str) -> dict:
         """The response the agent gets instead of a result AgentGuard
         refused to deliver."""
-        if method == "tools/call":
+        if method == "tools/call" and "result" in message:
             # A tool-level error, which is how MCP says a tool reports
             # failure; the agent sees a normal result shape with isError.
             return {
