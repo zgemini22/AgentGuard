@@ -124,7 +124,9 @@ def test_engine_denies_uri_format_argument_via_network_rule():
     decision = engine.evaluate("http_get", {"target": "https://evil.example.net/x", "timeout": 5})
     assert decision.allowed is False
     assert decision.category == "network"
-    assert decision.argument_categories == {"target": "network"}
+    # `target` is also a path-like key name, so the value is judged under
+    # both categories; the network allowlist is what denies it.
+    assert decision.argument_categories == {"target": "network+file_access"}
 
 
 def test_engine_reports_unclassified_arguments_in_decision():

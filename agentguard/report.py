@@ -30,11 +30,10 @@ import os
 import time
 from collections import OrderedDict
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
 
 from .audit import verify_audit_log
 from .classify import COMMAND_EXEC, FILE_ACCESS, NETWORK, classify_by_key_name
-from .policy import file_uri_path, iter_string_arguments
+from .policy import file_uri_path, iter_string_arguments, url_host
 from .session import parent_directory
 
 UNSESSIONED = "(no session)"
@@ -66,16 +65,17 @@ def _classified_values(entry: dict):
     recorded = entry.get("argument_categories")
     for key, value in iter_string_arguments(arguments):
         if recorded is not None:
-            category = recorded.get(key)
+            categories = str(recorded.get(key) or "").split("+")
         else:
             guess = classify_by_key_name(key.rsplit(".", 1)[-1])
-            category = guess.category if guess else None
-        if category == FILE_ACCESS:
-            yield FILE_ACCESS, file_uri_path(value) or value
-        elif category == NETWORK:
-            yield NETWORK, urlparse(value).hostname or value
-        elif category == COMMAND_EXEC:
-            yield COMMAND_EXEC, value
+            categories = [guess.category] if guess else []
+        for category in categories:
+            if category == FILE_ACCESS:
+                yield FILE_ACCESS, file_uri_path(value) or value
+            elif category == NETWORK:
+                yield NETWORK, url_host(value) or value
+            elif category == COMMAND_EXEC:
+                yield COMMAND_EXEC, value
 
 
 def _fmt_time(ts: Optional[float]) -> str:

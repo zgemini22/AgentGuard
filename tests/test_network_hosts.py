@@ -37,7 +37,7 @@ def test_allowlisted_hosts_are_allowed(engine, url):
     # but not for urllib.parse: those clients connect to the first host.
     "http://127.0.0.1:9\\@api.github.com/",
     "https://evil.test\\@api.github.com/",
-    "https://evil.test\.api.github.com/",
+    "https://evil.test\\.api.github.com/",
     # Userinfo is fine; the host after it is what's judged.
     "https://api.github.com@evil.test/",
     # No scheme: the host is the part before the first '/', not the string.

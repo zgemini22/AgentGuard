@@ -25,6 +25,15 @@ For a tool with no known schema, only steps 2–3 apply. Anything that
 matches nothing is reported as unclassified so the policy can choose
 to fail closed (see `unclassified_arguments` in policy.py).
 
+The policy does not stop at the first step that matches. It uses
+`classify_property_all`: every category that steps 1–3 assign (every
+name token, not just the first — `script_path` is both a script and a
+path), with step 4 only as a fallback when 1–3 find nothing. The
+argument is judged under each of those categories and the most
+restrictive result wins. Separately, a value that is itself an
+http(s)/ws(s)/ftp(s) URL is judged as network, and a `file://` URI as a
+file path, whatever the argument is called.
+
 Schema-derived classification is a heuristic on text a server chose,
 not a guarantee. It raises the bar from "rename one argument" to "lie
 convincingly in your own schema," which is a different kind of attacker.
@@ -34,7 +43,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 FILE_ACCESS = "file_access"
 COMMAND_EXEC = "command_exec"
@@ -157,6 +166,41 @@ def classify_property(key: str, prop_schema: Optional[dict]) -> Optional[Classif
     return None
 
 
+def classify_property_all(key: str, prop_schema: Optional[dict]) -> List[Classification]:
+    """Every category any signal assigns the argument, not just the first.
+
+    `classify_property` stops at the first rule that matches, which let a
+    weaker signal hide a stronger one: `script_path` is a script *and* a
+    path, but its first token made it command-only, so the file rules
+    never saw it. The policy judges an argument under every category
+    returned here and the most restrictive outcome wins. The schema
+    description is still only a fallback: it is free text, and matching
+    it on every argument would drag content arguments into the rules."""
+    found: List[Classification] = []
+
+    def add(category: str, source: str) -> None:
+        if all(c.category != category for c in found):
+            found.append(Classification(category, source))
+
+    if isinstance(prop_schema, dict):
+        fmt = prop_schema.get("format")
+        if isinstance(fmt, str) and fmt.lower() in FORMAT_CATEGORIES:
+            add(FORMAT_CATEGORIES[fmt.lower()], "schema:format")
+    by_key = classify_by_key_name(key)
+    if by_key is not None:
+        add(by_key.category, by_key.source)
+    for token in _name_tokens(key):
+        if token in NAME_TOKEN_CATEGORIES:
+            add(NAME_TOKEN_CATEGORIES[token], "key_token")
+    if not found and isinstance(prop_schema, dict):
+        description = prop_schema.get("description")
+        if isinstance(description, str) and description:
+            for pattern, category in DESCRIPTION_KEYWORDS:
+                if pattern.search(description):
+                    add(category, "schema:description")
+    return found
+
+
 class ArgumentClassifier:
     """Holds the per-tool schemas seen on `tools/list` and classifies
     arguments against them. Safe to share between threads: the only
@@ -200,3 +244,6 @@ class ArgumentClassifier:
 
     def classify(self, tool_name: str, key: str) -> Optional[Classification]:
         return classify_property(key, self.property_schema(tool_name, key))
+
+    def classify_all(self, tool_name: str, key: str) -> List[Classification]:
+        return classify_property_all(key, self.property_schema(tool_name, key))

@@ -122,10 +122,19 @@ class Decision:
     @property
     def argument_categories(self) -> dict:
         """`{key: category}` for every classified argument, with
-        "unclassified" for the ones nothing recognized. This is what the
-        audit log records, so a reader can tell which arguments the
-        policy actually looked at."""
-        return {a.key: (a.category or "unclassified") for a in self.arguments}
+        "unclassified" for the ones nothing recognized, and categories
+        joined with "+" for an argument judged under several. This is
+        what the audit log records, so a reader can tell which arguments
+        the policy actually looked at."""
+        out: dict = {}
+        for a in self.arguments:
+            category = a.category or "unclassified"
+            existing = out.get(a.key)
+            if existing is None:
+                out[a.key] = category
+            elif category not in existing.split("+"):
+                out[a.key] = f"{existing}+{category}"
+        return out
 
 
 def grant_scope(tool: str, decision: Decision) -> str:
@@ -184,7 +193,7 @@ def url_host(value: str) -> Optional[str]:
     Unambiguously matters: the host that decides the allowlist must be
     the host the server's HTTP client connects to, and parsers disagree
     on some inputs — a backslash ends the authority for browsers, urllib3
-    and requests but not for urllib.parse, so `http://a\@b/` is `a` to
+    and requests but not for urllib.parse, so `http://a\\@b/` is `a` to
     them and `b` to urlparse. Such values, and anything with whitespace,
     control characters or percent-encoding in the authority, are refused
     rather than guessed at. A value with no scheme is read as
@@ -220,26 +229,32 @@ def url_host(value: str) -> Optional[str]:
     return host
 
 
+# Values that are themselves URLs a server would connect to are judged as
+# network whatever the argument is called.
+_URL_VALUE = re.compile(r"^(https?|wss?|ftps?)://", re.IGNORECASE)
+
+
 def iter_string_arguments(arguments, prefix: str = "") -> Iterator[Tuple[str, str]]:
     """Yields `(key, value)` for every string anywhere in the arguments,
-    descending into lists and nested objects. A list of paths under
-    `paths` yields each path under the key `paths`; a nested
+    descending into lists (at any depth) and nested objects. A list of
+    paths under `paths` yields each path under the key `paths`, and so
+    does a list of lists (`moves: [[src, dst]]`); a nested
     `{"options": {"path": ...}}` yields under `options.path`. Numbers,
     booleans and nulls can't carry a path or a URL and are skipped."""
     if not isinstance(arguments, dict):
         return
     for key, value in arguments.items():
-        full_key = f"{prefix}{key}"
-        if isinstance(value, str):
-            yield full_key, value
-        elif isinstance(value, list):
-            for item in value:
-                if isinstance(item, str):
-                    yield full_key, item
-                elif isinstance(item, dict):
-                    yield from iter_string_arguments(item, f"{full_key}.")
-        elif isinstance(value, dict):
-            yield from iter_string_arguments(value, f"{full_key}.")
+        yield from _iter_value(f"{prefix}{key}", value)
+
+
+def _iter_value(full_key: str, value) -> Iterator[Tuple[str, str]]:
+    if isinstance(value, str):
+        yield full_key, value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_value(full_key, item)
+    elif isinstance(value, dict):
+        yield from iter_string_arguments(value, f"{full_key}.")
 
 
 class PolicyEngine:
@@ -423,24 +438,36 @@ class PolicyEngine:
         return rules
 
     def classify_arguments(self, tool_name: str, arguments: dict) -> List[ClassifiedArgument]:
+        """One entry per (argument, category). An argument that several
+        signals place in different categories appears once for each, and
+        is judged under all of them (see classify.classify_property_all).
+        Independently of its name, a value that *is* a URL is also judged
+        as network, and a `file://` URI as a file path."""
         classified = []
-        for key, value in iter_string_arguments(arguments):
+        for key, raw_value in iter_string_arguments(arguments):
             # Nested keys are classified by their leaf name; the schema
             # lookup only knows top-level properties.
             leaf = key.rsplit(".", 1)[-1]
-            result = self.classifier.classify(tool_name, leaf)
-            if result is None:
-                classified.append(ClassifiedArgument(key, value, None, "unclassified"))
+            results = [(c.category, c.source) for c in self.classifier.classify_all(tool_name, leaf)]
+            file_path = file_uri_path(raw_value)
+            if file_path is not None:
+                # A file:// URI is a file read whatever the argument is
+                # called; judge it by the path rules, never as a host.
+                converted = [(FILE_ACCESS, f"{s}:file-uri") for c, s in results if c == NETWORK]
+                results = [(c, s) for c, s in results if c != NETWORK]
+                if all(c != FILE_ACCESS for c, _ in results):
+                    results.append(converted[0] if converted else (FILE_ACCESS, "value:file-uri"))
+            elif _URL_VALUE.match(raw_value) and all(c != NETWORK for c, _ in results):
+                results.append((NETWORK, "value:url"))
+            if not results:
+                classified.append(ClassifiedArgument(key, raw_value, None, "unclassified"))
                 continue
-            category, source = result.category, result.source
-            if category == NETWORK:
-                # A file:// URI under a URL-shaped argument is a file
-                # read wearing a network hat; judge it by the path rules.
-                file_path = file_uri_path(value)
-                if file_path is not None:
-                    category, source, value = FILE_ACCESS, source + ":file-uri", file_path
-            canonical = canonical_path(value, self.base_dir) if category == FILE_ACCESS else None
-            classified.append(ClassifiedArgument(key, value, category, source, canonical))
+            for category, source in results:
+                value = raw_value
+                if category == FILE_ACCESS and file_path is not None:
+                    value = file_path
+                canonical = canonical_path(value, self.base_dir) if category == FILE_ACCESS else None
+                classified.append(ClassifiedArgument(key, value, category, source, canonical))
         return classified
 
     def evaluate(self, tool_name: str, arguments: dict, session=None) -> Decision:
@@ -460,6 +487,13 @@ class PolicyEngine:
         return decision
 
     def _evaluate(self, tool_name: str, arguments: dict, session=None) -> Decision:
+        if arguments is not None and not isinstance(arguments, dict):
+            # MCP tool arguments are an object. Anything else can't be
+            # classified key by key, and a server may still read it.
+            return Decision(
+                False, UNCLASSIFIED,
+                f"tool '{tool_name}' arguments must be a JSON object, not {type(arguments).__name__}",
+            )
         classified = self.classify_arguments(tool_name, arguments)
         rules = self.rules_for_tool(tool_name)
         if not rules.enabled:
