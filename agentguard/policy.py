@@ -27,6 +27,7 @@ from typing import Callable, Iterator, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 from .grants import GrantStore
+from .paths import PathMatcher, canonical_path
 from .session import parent_directory
 from .validate import PolicyError, load_policy, validate_policy  # noqa: F401
 from .classify import (  # noqa: F401  (re-exported for backward compatibility)
@@ -73,6 +74,9 @@ class ClassifiedArgument:
     value: str
     category: Optional[str]
     source: str
+    # For file_access: the absolute, normalized path the value names
+    # (see agentguard.paths). What directory counts and reasons use.
+    canonical: Optional[str] = None
 
 
 ALLOW = "allow"
@@ -192,8 +196,13 @@ def iter_string_arguments(arguments, prefix: str = "") -> Iterator[Tuple[str, st
 
 
 class PolicyEngine:
-    def __init__(self, config: dict, classifier: Optional[ArgumentClassifier] = None):
+    def __init__(self, config: dict, classifier: Optional[ArgumentClassifier] = None,
+                 base_dir: Optional[str] = None):
         config = config or {}
+        # Relative file paths are resolved against this: the directory the
+        # wrapped server runs in, which is ours (the proxy starts it without
+        # changing directory). See agentguard.paths.
+        self.base_dir = os.path.abspath(base_dir if base_dir is not None else os.getcwd())
         # Strict: an unknown key, a non-compiling regex, a string where a
         # bool belongs — all fail here, at construction, rather than
         # silently loading as a default. See agentguard.validate.
@@ -299,7 +308,7 @@ class PolicyEngine:
                 "deny_exec_after_fetch", action=self.sequence_action,
             )
         if self.max_distinct_directories is not None and FILE_ACCESS in touched:
-            new_dirs = {parent_directory(a.value) for a in classified if a.category == FILE_ACCESS}
+            new_dirs = {parent_directory(a.canonical or a.value) for a in classified if a.category == FILE_ACCESS}
             new_dirs -= session.directories
             total = len(session.directories) + len(new_dirs)
             if total > self.max_distinct_directories:
@@ -314,7 +323,7 @@ class PolicyEngine:
     def note_allowed(self, session, decision: Decision) -> None:
         """Records a forwarded call on the session — budget counters and
         the sequence facts — using this policy's notion of "sensitive"."""
-        session.note_allowed_call(decision, self.sensitive_patterns)
+        session.note_allowed_call(decision, self.sensitive_patterns, base_dir=self.base_dir)
 
     @staticmethod
     def _deny_entries(raw_list) -> List[Tuple[str, str]]:
@@ -383,7 +392,8 @@ class PolicyEngine:
                 file_path = file_uri_path(value)
                 if file_path is not None:
                     category, source, value = FILE_ACCESS, source + ":file-uri", file_path
-            classified.append(ClassifiedArgument(key, value, category, source))
+            canonical = canonical_path(value, self.base_dir) if category == FILE_ACCESS else None
+            classified.append(ClassifiedArgument(key, value, category, source, canonical))
         return classified
 
     def evaluate(self, tool_name: str, arguments: dict, session=None) -> Decision:
@@ -475,16 +485,18 @@ class PolicyEngine:
         """Same semantics for every category: a deny pattern match denies;
         otherwise, if there's an allowlist and the value isn't on it,
         `default_action` decides. What a "match" means differs — glob on
-        the expanded path, glob on the hostname, regex on the command."""
-        subject, matches = self._matcher(category, value)
+        the canonical path (agentguard.paths), glob on the hostname, regex
+        on the command."""
+        subject, denied_by, allowed_by_any = self._matcher(category, value)
+        shown = f"'{value}'" if subject == value else f"'{value}' (as '{subject}')"
         for pattern, action in rule.deny_patterns:
-            if matches(pattern):
+            if denied_by(pattern):
                 return Decision(
                     False, category,
-                    f"value '{value}' matches {action} pattern '{pattern}'",
+                    f"value {shown} matches {action} pattern '{pattern}'",
                     pattern, action=action,
                 )
-        if not rule.allow_patterns or any(matches(p) for p in rule.allow_patterns):
+        if not rule.allow_patterns or allowed_by_any(rule.allow_patterns):
             return None
         if rule.default_action != ALLOW:
             noun = "host" if category == NETWORK else "value"
@@ -495,13 +507,14 @@ class PolicyEngine:
             )
         return None
 
-    @staticmethod
-    def _matcher(category: str, value: str) -> Tuple[str, Callable[[str], bool]]:
-        """Returns (what is being matched, pattern -> bool)."""
+    def _matcher(self, category: str, value: str):
+        """Returns (what is being matched, deny-match fn, allowlist fn)."""
         if category == FILE_ACCESS:
-            expanded = os.path.expanduser(value)
-            return expanded, lambda p: fnmatch.fnmatch(expanded, os.path.expanduser(p))
+            m = PathMatcher(value, self.base_dir)
+            return m.subject, m.denied_by, m.allowed_by_any
         if category == NETWORK:
             host = urlparse(value).hostname or value
-            return host, lambda p: fnmatch.fnmatch(host, p)
-        return value, lambda p: re.search(p, value) is not None
+            match = lambda p: fnmatch.fnmatch(host, p)  # noqa: E731
+            return host, match, lambda ps: any(match(p) for p in ps)
+        match = lambda p: re.search(p, value) is not None  # noqa: E731
+        return value, match, lambda ps: any(match(p) for p in ps)

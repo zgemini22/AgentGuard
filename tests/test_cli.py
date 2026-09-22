@@ -164,7 +164,8 @@ def test_check_policy_probe_explains_a_denial(capsys):
     assert "probe: read_file" in out
     assert "path = '~/.ssh/id_rsa'  ->  file_access (key_name)" in out
     assert "decision: DENY  category=file_access  matched_rule=~/.ssh/**" in out
-    assert "reason: value '~/.ssh/id_rsa' matches deny pattern '~/.ssh/**'" in out
+    assert "reason: value '~/.ssh/id_rsa' (as '" in out
+    assert "matches deny pattern '~/.ssh/**'" in out
 
 
 def test_check_policy_probe_shows_unclassified_arguments(capsys):

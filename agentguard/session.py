@@ -25,7 +25,6 @@ what's happened so far, is this call still allowed?"
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import os
 import platform
@@ -36,6 +35,7 @@ from typing import Dict, List, Optional, Sequence, Set
 
 from . import __version__
 from .classify import FILE_ACCESS, NETWORK, ArgumentClassifier
+from .paths import matches_any
 
 
 def file_sha256(path: str) -> Optional[str]:
@@ -76,18 +76,20 @@ class Session:
     # raised again. See agentguard/grants.py.
     grants: Set[str] = field(default_factory=set)
 
-    def note_allowed_call(self, decision, sensitive_patterns: Sequence[str] = ()) -> None:
+    def note_allowed_call(self, decision, sensitive_patterns: Sequence[str] = (),
+                          base_dir: Optional[str] = None) -> None:
         """Called when a call is forwarded. One budget increment per
         category the call touched, however many arguments fell in it —
         a `read_many(paths=[...])` is one file call — plus the sequence
-        facts above."""
+        facts above. Sensitive-read matching uses the same canonical
+        forms as the file_access rules (agentguard.paths), so `.env` and
+        `./.env` count exactly like `/project/.env`."""
         for category in sorted({a.category for a in decision.arguments if a.category}):
             self.call_counts[category] = self.call_counts.get(category, 0) + 1
         for arg in decision.arguments:
             if arg.category == FILE_ACCESS:
-                self.directories.add(parent_directory(arg.value))
-                if any(fnmatch.fnmatch(os.path.expanduser(arg.value), os.path.expanduser(p))
-                       for p in sensitive_patterns):
+                self.directories.add(parent_directory(getattr(arg, "canonical", None) or arg.value))
+                if sensitive_patterns and matches_any(arg.value, sensitive_patterns, base_dir):
                     self.sensitive_reads.append(arg.value)
             elif arg.category == NETWORK:
                 self.fetched = True
