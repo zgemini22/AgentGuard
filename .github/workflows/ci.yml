@@ -10,20 +10,31 @@ permissions:
 
 jobs:
   test:
-    name: pytest (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: pytest (${{ matrix.os }}, Python ${{ matrix.python-version }}${{ matrix.utf8 == '0' && ', locale encoding' || '' }})
     runs-on: ${{ matrix.os }}
     env:
-      PYTHONUTF8: "1"
+      PYTHONUTF8: ${{ matrix.utf8 }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.9", "3.12"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        utf8: ["1"]
         include:
+          - os: macos-latest
+            python-version: "3.12"
+            utf8: "1"
           # The approval channel needs AF_UNIX; on Windows those tests
           # skip and the degrade-to-deny path is what gets exercised.
           - os: windows-latest
             python-version: "3.12"
+            utf8: "1"
+          # Without UTF-8 mode Python uses the locale code page (cp1252
+          # here, cp936 on a Chinese Windows). The transport must still be
+          # UTF-8; this job is what catches a regression there.
+          - os: windows-latest
+            python-version: "3.12"
+            utf8: "0"
 
     steps:
       - name: Check out repository
@@ -42,3 +53,36 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+  package:
+    # What users install is the wheel, not this checkout: build it, install
+    # it into a clean venv, and run it from a directory with no repo files.
+    name: build and smoke-test the wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Install the wheel into a clean venv and run it from an empty directory
+        run: |
+          python -m venv /tmp/wheelenv
+          /tmp/wheelenv/bin/pip install dist/*.whl
+          mkdir /tmp/empty && cd /tmp/empty
+          /tmp/wheelenv/bin/agentguard check-policy
+          /tmp/wheelenv/bin/agentguard default-policy > my-policy.yaml
+          /tmp/wheelenv/bin/agentguard check-policy --config my-policy.yaml
+          set +e
+          /tmp/wheelenv/bin/agentguard check-policy --probe read_file '{"path": ".env"}'
+          test $? -eq 3
+      - name: Run the sdist's own test suite
+        run: |
+          mkdir /tmp/sdist && tar xzf dist/*.tar.gz -C /tmp/sdist --strip-components=1
+          python -m venv /tmp/sdistenv
+          /tmp/sdistenv/bin/pip install /tmp/sdist pytest
+          cd /tmp/sdist && /tmp/sdistenv/bin/python -m pytest -q

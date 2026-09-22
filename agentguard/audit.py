@@ -117,7 +117,7 @@ def verify_audit_log(path: str, anchors: Sequence[Anchor] = ()) -> VerificationR
     expected_prev = GENESIS_HASH
     count = 0
     if p.exists():
-        with p.open("r") as f:
+        with p.open("r", encoding="utf-8") as f:
             for line_no, raw_line in enumerate(f, start=1):
                 line = raw_line.strip()
                 if not line:
@@ -221,7 +221,7 @@ class AuditLog:
             return GENESIS_HASH, 0
         last_hash = GENESIS_HASH
         count = 0
-        with self.path.open("r") as f:
+        with self.path.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -335,7 +335,7 @@ class AuditLog:
                 entry["session_id"] = self.session_id
             entry["prev_hash"] = self._last_hash
             entry["hash"] = compute_entry_hash(entry)
-            with self.path.open("a") as f:
+            with self.path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, sort_keys=True) + "\n")
             self._last_hash = entry["hash"]
             self._count += 1

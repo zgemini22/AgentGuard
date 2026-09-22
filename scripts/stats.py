@@ -27,7 +27,7 @@ CORE_MODULES = [
 
 
 def count_default_policy_rules() -> dict:
-    with open(REPO_ROOT / "agentguard" / "policies" / "default.yaml") as f:
+    with open(REPO_ROOT / "agentguard" / "policies" / "default.yaml", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     counts = {
@@ -43,13 +43,13 @@ def count_default_policy_rules() -> dict:
 def count_lines(paths) -> int:
     total = 0
     for p in paths:
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             total += sum(1 for _ in f)
     return total
 
 
 def count_runtime_dependencies() -> list:
-    with open(REPO_ROOT / "pyproject.toml") as f:
+    with open(REPO_ROOT / "pyproject.toml", encoding="utf-8") as f:
         content = f.read()
     # Minimal parse: pull the `dependencies = [...]` list out of [project].
     # Not a general TOML parser — just enough for this one file's shape.

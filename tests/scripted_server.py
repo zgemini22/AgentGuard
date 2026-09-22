@@ -8,6 +8,9 @@ import json
 import sys
 
 script = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
+# Like a real MCP server: UTF-8 on the wire whatever the locale says.
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 
 for raw in sys.stdin:
     raw = raw.strip()
@@ -26,5 +29,8 @@ for raw in sys.stdin:
         lines = [json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"serverInfo": {"name": "scripted"}}})]
     for line in lines or []:
         line = line.replace("__IDSTR__", json.dumps(str(request_id))).replace("__ID__", json.dumps(request_id))
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        line = line.replace("__ARGS__", json.dumps(json.dumps(params.get("arguments"), ensure_ascii=False),
+                                                   ensure_ascii=False))
         sys.stdout.write(line + "\n")
     sys.stdout.flush()

@@ -134,6 +134,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _use_utf8_stdio() -> None:
+    """The MCP stdio transport is UTF-8 with LF line endings. Python's
+    own stdin/stdout follow the locale (cp936, cp1252 on Windows) unless
+    UTF-8 mode is on; as the proxy's transport they must not."""
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace", newline="\n")
+
+
 def _resolve_config(args: argparse.Namespace, err=None) -> str:
     """`--config` if given, else the bundled policy. 0.1.x read
     `policies/default.yaml` from the working directory when --config was
@@ -172,6 +182,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 
     args.config = _resolve_config(args)
     raw_config = _load_config_or_exit(args.config, parser)
+    _use_utf8_stdio()
     policy = PolicyEngine(raw_config)
     redactor = SecretRedactor.from_config(raw_config)
     injection_detector = InjectionDetector.from_config(raw_config)

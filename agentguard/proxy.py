@@ -263,12 +263,19 @@ class MCPProxy:
                 # out loud here so it isn't discovered from the log.
                 print(f"agentguard: approval channel unavailable ({e}); every `ask` verdict will be denied", file=self.stderr)
                 self.approver = None
+        # MCP stdio is UTF-8 whatever the locale says. Left to the locale
+        # (cp936, cp1252 on Windows), UTF-8 results were mis-decoded — a
+        # byte of a secret could pair with the character before it and
+        # escape the redaction rule, then be re-encoded intact on the way
+        # out — or crashed the pump on the first non-ASCII character.
         proc = subprocess.Popen(
             self.server_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self.stderr,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         server_reader = threading.Thread(
