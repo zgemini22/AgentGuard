@@ -31,7 +31,7 @@ def test_file_allowlist_miss_scope_is_the_canonical_path(tmp_path):
     engine = PolicyEngine({"file_access": {"allow_patterns": [f"{tmp_path}/pub/**"], "default_action": "ask"}},
                           base_dir=str(tmp_path))
     decision = engine.evaluate("read", {"paths": ["pub/a", "priv/b"]})
-    assert grant_scopes("read", decision) == [f"read:file_access:{tmp_path}/priv/b"]
+    assert grant_scopes("read", decision) == [f"read:file_access:{tmp_path / 'priv' / 'b'}"]
 
 
 ASK_AND_DENY = {"file_access": {"deny_patterns": [

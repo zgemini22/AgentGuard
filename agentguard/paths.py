@@ -100,6 +100,10 @@ def canonical_pattern(pattern: str, base_dir: str) -> str:
 
 
 def _glob_match(path: str, pattern: str) -> bool:
+    if _WINDOWS and not ntpath.splitdrive(pattern)[0]:
+        # realpath() puts a drive on a rooted path (`\project\x` ->
+        # `C:\project\x`); a pattern written without one means "any drive".
+        path = ntpath.splitdrive(path)[1]
     return fnmatch.fnmatchcase(_comparable(path), _comparable(pattern))
 
 

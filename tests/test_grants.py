@@ -40,7 +40,7 @@ def test_store_round_trips_through_yaml(tmp_path):
     assert store.grants == []
     store.add(Grant.now("read_file:file_access:**/.env", "read_file", "abc"))
     store.add(Grant.now("fetch:network:docs.python.org", "fetch", "abc"))
-    text = open(path).read()
+    text = open(path, encoding="utf-8").read()
     assert text.startswith("# Persistent operator grants")
     assert "read_file:file_access:**/.env" in text
     assert not os.path.exists(path + ".tmp")

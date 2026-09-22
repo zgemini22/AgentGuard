@@ -20,7 +20,7 @@ DEFAULT_POLICY_PATH = os.path.join(os.path.dirname(__file__), "..", "agentguard"
 
 
 def load_default_config() -> dict:
-    with open(DEFAULT_POLICY_PATH) as f:
+    with open(DEFAULT_POLICY_PATH, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -37,7 +37,7 @@ def test_default_policy_ships_with_unclassified_allow_and_documents_deny():
     # is opt-in. If this changes, the README's policy section must too.
     config = load_default_config()
     assert config["unclassified_arguments"] == "allow"
-    with open(DEFAULT_POLICY_PATH) as f:
+    with open(DEFAULT_POLICY_PATH, encoding="utf-8") as f:
         assert "the secure setting" in f.read()
 
 
