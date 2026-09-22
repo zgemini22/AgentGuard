@@ -60,9 +60,9 @@ file_access:
 command_exec:
   enabled: true
   deny_patterns:
-    - "rm\\s+-rf\\s+/"
-    - "curl[^|\\n]*\\|\\s*(sudo\\s+)?(sh|bash)"
-    - "wget[^|\\n]*\\|\\s*(sudo\\s+)?(sh|bash)"
+    - "\\brm\\s+(-{1,2}[\\w-]+\\s+)*(/|/\\*|~/?|\\$HOME/?)(\\s|$)"
+    - "\\bcurl\\b[^|\\n]{0,512}\\|\\s*(sudo\\s+)?(sh|bash|zsh|dash|ksh|python[23]?|perl|ruby|node)\\b"
+    - "\\bwget\\b[^|\\n]{0,512}\\|\\s*(sudo\\s+)?(sh|bash|zsh|dash|ksh|python[23]?|perl|ruby|node)\\b"
     - ":\\(\\)\\s*\\{\\s*:\\|\\s*:\\s*&\\s*\\}\\s*;"
 
 network:
@@ -149,15 +149,15 @@ redaction:
     - name: aws_secret_access_key
       pattern: "(?i)aws_secret_access_key[\"']?\\s*[:=]\\s*[\"']?[A-Za-z0-9/+=]{40}"
     - name: github_token
-      pattern: "gh[pousr]_[A-Za-z0-9]{36,}"
+      pattern: "gh[pousr]_[A-Za-z0-9]{36,255}"
     - name: slack_token
-      pattern: "xox[baprs]-[A-Za-z0-9-]{10,}"
+      pattern: "xox[baprs]-[A-Za-z0-9-]{10,255}"
     - name: private_key_block
-      pattern: "-----BEGIN[ A-Z]*PRIVATE KEY-----[\\s\\S]*?-----END[ A-Z]*PRIVATE KEY-----"
+      pattern: "-----BEGIN[ A-Z]{0,40}PRIVATE KEY-----(?:[^-]|-(?!----)){0,16384}-----END[ A-Z]{0,40}PRIVATE KEY-----"
     - name: jwt
-      pattern: "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"
+      pattern: "(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{1,4096}\\.[A-Za-z0-9_-]{1,8192}\\.[A-Za-z0-9_-]{1,8192}"
     - name: generic_api_key
-      pattern: "(?i)(api[_-]?key|secret|token)[\"']?\\s*[:=]\\s*[\"'][A-Za-z0-9_\\-]{16,}[\"']"
+      pattern: "(?i)(api[_-]?key|secret|token)[\"']?\\s{0,16}[:=]\\s{0,16}[\"'][A-Za-z0-9_\\-]{16,512}[\"']"
 
 # Injection detection also runs on tool *output*, before redaction. It
 # looks for instruction-shaped text (the poisoned-webpage/poisoned-doc
@@ -173,12 +173,12 @@ injection_detection:
     - name: disregard_instructions
       pattern: "disregard\\s+((your|all|previous|prior)\\s+)+(instructions|rules|guidelines|prompt)"
     - name: new_instructions_marker
-      pattern: "#{0,3}\\s*(new|updated|admin|system|override)\\s+instructions\\s*:"
+      pattern: "(?:#{1,3}[ \\t]*|\\b)(new|updated|admin|system|override)\\s+instructions\\s*:"
     - name: role_override
-      pattern: "you are now\\s+(a|an)\\b"
+      pattern: "you\\s+are\\s+now\\s+(a|an)\\b"
     - name: reveal_system_prompt
-      pattern: "(reveal|print|show|output)\\s+(your\\s+)?(system prompt|full instructions|initial prompt)"
+      pattern: "(reveal|print|show|output)\\s+(your\\s+)?(system\\s+prompt|full\\s+instructions|initial\\s+prompt)"
     - name: exfiltrate_secret
-      pattern: "(send|post|email|upload|forward|exfiltrate|transmit)\\s+(the\\s+|the\\s+user'?s\\s+|your\\s+)?(ssh key|api key|password|credentials?|secrets?|tokens?|private key)s?\\s+to\\b"
+      pattern: "(send|post|email|upload|forward|exfiltrate|transmit)\\s+(the\\s+|the\\s+user'?s\\s+|your\\s+)?(ssh\\s+key|api\\s+key|password|credentials?|secrets?|tokens?|private\\s+key)s?\\s+to\\b"
     - name: pipe_to_shell
-      pattern: "curl[^|\\n]*\\|\\s*(sudo\\s+)?(sh|bash)"
+      pattern: "\\b(curl|wget)\\b[^|\\n]{0,512}\\|\\s*(sudo\\s+)?(sh|bash|zsh|dash|ksh|python[23]?|perl|ruby|node)\\b"

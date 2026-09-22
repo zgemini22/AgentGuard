@@ -18,11 +18,12 @@ usage data to tune against.
 
 from __future__ import annotations
 
+import bisect
 import re
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
-from .normalize import normalize
+from .normalize import SCAN_LIMIT_RULE, normalize
 
 
 @dataclass
@@ -37,12 +38,12 @@ class RedactionRule:
 
 DEFAULT_RULES: List[RedactionRule] = [
     RedactionRule("aws_access_key_id", r"AKIA[0-9A-Z]{16}"),
-    RedactionRule("aws_secret_access_key", r"(?i)aws_secret_access_key[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}"),
-    RedactionRule("github_token", r"gh[pousr]_[A-Za-z0-9]{36,}"),
-    RedactionRule("slack_token", r"xox[baprs]-[A-Za-z0-9-]{10,}"),
-    RedactionRule("private_key_block", r"-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----"),
-    RedactionRule("jwt", r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
-    RedactionRule("generic_api_key", r"(?i)(api[_-]?key|secret|token)[\"']?\s*[:=]\s*[\"'][A-Za-z0-9_\-]{16,}[\"']"),
+    RedactionRule("aws_secret_access_key", r"""(?i)aws_secret_access_key["']?\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}"""),
+    RedactionRule("github_token", r"gh[pousr]_[A-Za-z0-9]{36,255}"),
+    RedactionRule("slack_token", r"xox[baprs]-[A-Za-z0-9-]{10,255}"),
+    RedactionRule("private_key_block", r"-----BEGIN[ A-Z]{0,40}PRIVATE KEY-----(?:[^-]|-(?!----)){0,16384}-----END[ A-Z]{0,40}PRIVATE KEY-----"),
+    RedactionRule("jwt", r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{1,8192}\.[A-Za-z0-9_-]{1,8192}"),
+    RedactionRule("generic_api_key", r"""(?i)(api[_-]?key|secret|token)["']?\s{0,16}[:=]\s{0,16}["'][A-Za-z0-9_\-]{16,512}["']"""),
 ]
 
 
@@ -77,20 +78,36 @@ class SecretRedactor:
             return text, []
 
         nt = normalize(text)
-        claimed: List[Tuple[int, int, str]] = []  # (orig_start, orig_end, rule_name)
+        if nt.incomplete:
+            # More encoded content than the scanners will decode: what
+            # wasn't decoded wasn't checked, so none of it is delivered.
+            return f"[REDACTED:{SCAN_LIMIT_RULE}]", [SCAN_LIMIT_RULE]
+        claimed: List[Tuple[int, int, str]] = []  # (orig_start, orig_end, rule_name), in rule order
+        # The claimed spans never overlap, so sorted starts and ends are an
+        # interval index: a new span only has to be checked against its
+        # neighbours, not against every earlier match.
+        starts: List[int] = []
+        ends: List[int] = []
 
-        def _free(start: int, end: int) -> bool:
-            return all(end <= s or start >= e for s, e, _ in claimed)
+        def _claim(start: int, end: int, name: str) -> None:
+            i = bisect.bisect_right(starts, start)
+            if i > 0 and ends[i - 1] > start:
+                return
+            if i < len(starts) and starts[i] < end:
+                return
+            starts.insert(i, start)
+            ends.insert(i, end)
+            claimed.append((start, end, name))
 
         for rule in self.rules:
             for target, run in nt.scan_targets():
                 if run is None:
                     for match in rule.compiled.finditer(target):
                         start, end = nt.map_span(match.start(), match.end())
-                        if end > start and _free(start, end):
-                            claimed.append((start, end, rule.name))
-                elif rule.compiled.search(target) and _free(run.start, run.end):
-                    claimed.append((run.start, run.end, rule.name))
+                        if end > start:
+                            _claim(start, end, rule.name)
+                elif rule.compiled.search(target):
+                    _claim(run.start, run.end, rule.name)
 
         if not claimed:
             return text, []

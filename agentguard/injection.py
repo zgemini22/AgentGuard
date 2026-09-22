@@ -32,7 +32,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List
 
-from .normalize import normalize
+from .normalize import SCAN_LIMIT_RULE, normalize
 
 
 @dataclass
@@ -48,15 +48,15 @@ class InjectionRule:
 DEFAULT_RULES: List[InjectionRule] = [
     InjectionRule("ignore_instructions", r"ignore\s+(all\s+)?(previous|prior|above|earlier)\s+instructions"),
     InjectionRule("disregard_instructions", r"disregard\s+((your|all|previous|prior)\s+)+(instructions|rules|guidelines|prompt)"),
-    InjectionRule("new_instructions_marker", r"#{0,3}\s*(new|updated|admin|system|override)\s+instructions\s*:"),
-    InjectionRule("role_override", r"you are now\s+(a|an)\b"),
-    InjectionRule("reveal_system_prompt", r"(reveal|print|show|output)\s+(your\s+)?(system prompt|full instructions|initial prompt)"),
+    InjectionRule("new_instructions_marker", r"(?:#{1,3}[ \t]*|\b)(new|updated|admin|system|override)\s+instructions\s*:"),
+    InjectionRule("role_override", r"you\s+are\s+now\s+(a|an)\b"),
+    InjectionRule("reveal_system_prompt", r"(reveal|print|show|output)\s+(your\s+)?(system\s+prompt|full\s+instructions|initial\s+prompt)"),
     InjectionRule(
         "exfiltrate_secret",
         r"(send|post|email|upload|forward|exfiltrate|transmit)\s+(the\s+|the\s+user'?s\s+|your\s+)?"
-        r"(ssh key|api key|password|credentials?|secrets?|tokens?|private key)s?\s+to\b",
+        r"(ssh\s+key|api\s+key|password|credentials?|secrets?|tokens?|private\s+key)s?\s+to\b",
     ),
-    InjectionRule("pipe_to_shell", r"curl[^|\n]*\|\s*(sudo\s+)?(sh|bash)"),
+    InjectionRule("pipe_to_shell", r"\b(curl|wget)\b[^|\n]{0,512}\|\s*(sudo\s+)?(sh|bash|zsh|dash|ksh|python[23]?|perl|ruby|node)\b"),
 ]
 
 
@@ -82,8 +82,14 @@ class InjectionDetector:
         truncate the text — callers decide what to do with a hit."""
         if not self.enabled or not text:
             return []
-        targets = [t for t, _ in normalize(text).scan_targets()]
-        return [
+        nt = normalize(text)
+        targets = [t for t, _ in nt.scan_targets()]
+        matched = [
             rule.name for rule in self.rules
             if any(rule.compiled.search(t) for t in targets)
         ]
+        if nt.incomplete:
+            # Encoded content past the decode limit wasn't scanned; the
+            # result is blocked rather than delivered partly unchecked.
+            matched.append(SCAN_LIMIT_RULE)
+        return matched

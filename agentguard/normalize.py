@@ -101,7 +101,14 @@ HOMOGLYPHS = {
 # wrapped `ignore previous instructions` (36 chars -> 48 encoded) is
 # caught.
 BASE64_MIN_CHARS = 40
-BASE64_MAX_RUNS = 64
+# Total decoded characters per text. Decoding is linear in the input, so
+# this bounds memory rather than time. Past it, the text is marked
+# incomplete and the scanners fail closed (the result is blocked or
+# withheld) instead of skipping what they didn't decode — a count of runs
+# used to be the cap, and 64 harmless runs hid anything after them.
+BASE64_MAX_DECODED_CHARS = 4_000_000
+# The rule name reported when a text exceeds what the scanners will decode.
+SCAN_LIMIT_RULE = "scan_limit_exceeded"
 _BASE64_RUN = re.compile(r"[A-Za-z0-9+/\-_]{%d,}={0,2}" % BASE64_MIN_CHARS)
 _MIN_PRINTABLE_RATIO = 0.9
 
@@ -124,6 +131,9 @@ class NormalizedText:
     # the identity and offsets are 1:1 (the common all-ASCII case).
     offsets: Optional[List[int]] = None
     decoded: List[DecodedRun] = field(default_factory=list)
+    # True when the text held more encoded content than will be decoded;
+    # the scanners treat it as not fully checked.
+    incomplete: bool = False
 
     @property
     def changed(self) -> bool:
@@ -203,20 +213,28 @@ def _try_decode_base64(run: str) -> Optional[str]:
 
 def decode_base64_runs(text: str) -> List[DecodedRun]:
     """Finds base64-looking runs in `text` and returns the ones that
-    decode to plausible text. Bounded by BASE64_MAX_RUNS so a pathological
-    output can't turn this into a CPU sink."""
+    decode to plausible text (up to BASE64_MAX_DECODED_CHARS in total)."""
+    return _decode_base64_runs(text)[0]
+
+
+def _decode_base64_runs(text: str) -> Tuple[List[DecodedRun], bool]:
+    """decode_base64_runs, plus whether decoding stopped early at
+    BASE64_MAX_DECODED_CHARS — in which case the text must not be
+    treated as fully scanned."""
     runs: List[DecodedRun] = []
+    total = 0
     for match in _BASE64_RUN.finditer(text):
-        if len(runs) >= BASE64_MAX_RUNS:
-            break
         decoded = _try_decode_base64(match.group(0))
         if decoded is None:
             continue
+        total += len(decoded)
+        if total > BASE64_MAX_DECODED_CHARS:
+            return runs, True
         # The decoded payload gets the same character-level treatment as
         # the outer text (but no further base64 decoding).
         normalized, _ = _normalize_chars(decoded)
         runs.append(DecodedRun(match.start(), match.end(), "base64", normalized))
-    return runs
+    return runs, False
 
 
 def normalize(text: str) -> NormalizedText:
@@ -226,4 +244,5 @@ def normalize(text: str) -> NormalizedText:
     if not text:
         return NormalizedText(text, text)
     normalized, offsets = _normalize_chars(text)
-    return NormalizedText(text, normalized, offsets, decode_base64_runs(text))
+    runs, incomplete = _decode_base64_runs(text)
+    return NormalizedText(text, normalized, offsets, runs, incomplete)
