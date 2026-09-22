@@ -173,6 +173,53 @@ def file_uri_path(value: str) -> Optional[str]:
     return path or "/"
 
 
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
+_HOST_CHARS = re.compile(r"[a-z0-9._\-]+|[0-9a-f:.]+")
+
+
+def url_host(value: str) -> Optional[str]:
+    """The host a URL or bare hostname names, lowercased, or None when it
+    can't be determined *unambiguously*.
+
+    Unambiguously matters: the host that decides the allowlist must be
+    the host the server's HTTP client connects to, and parsers disagree
+    on some inputs — a backslash ends the authority for browsers, urllib3
+    and requests but not for urllib.parse, so `http://a\@b/` is `a` to
+    them and `b` to urlparse. Such values, and anything with whitespace,
+    control characters or percent-encoding in the authority, are refused
+    rather than guessed at. A value with no scheme is read as
+    `//host[:port][/path]`, not matched as a whole string."""
+    if not isinstance(value, str) or not value:
+        return None
+    if "\\" in value or any(ord(c) < 0x21 or ord(c) == 0x7F for c in value):
+        return None
+    if _SCHEME.match(value):
+        parsed = urlparse(value)
+        if not parsed.netloc:
+            return None  # `http:evil.test`, `mailto:x` — no authority to judge
+    else:
+        parsed = urlparse(value if value.startswith("//") else "//" + value)
+    if "%" in parsed.netloc:
+        return None
+    try:
+        host = parsed.hostname
+        parsed.port  # raises ValueError on a malformed port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    host = host.rstrip(".")
+    if not host.isascii():
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
+    host = host.lower()
+    if not host or not _HOST_CHARS.fullmatch(host):
+        return None
+    return host
+
+
 def iter_string_arguments(arguments, prefix: str = "") -> Iterator[Tuple[str, str]]:
     """Yields `(key, value)` for every string anywhere in the arguments,
     descending into lists and nested objects. A list of paths under
@@ -488,6 +535,16 @@ class PolicyEngine:
         the canonical path (agentguard.paths), glob on the hostname, regex
         on the command."""
         subject, denied_by, allowed_by_any = self._matcher(category, value)
+        if subject is None:
+            # A network value whose host can't be determined unambiguously
+            # (see url_host). Only matters if the policy judges hosts at all.
+            if rule.deny_patterns or rule.allow_patterns:
+                return Decision(
+                    False, category,
+                    f"value '{value}' is not a URL or hostname whose host can be determined unambiguously",
+                    action=DENY,
+                )
+            return None
         shown = f"'{value}'" if subject == value else f"'{value}' (as '{subject}')"
         for pattern, action in rule.deny_patterns:
             if denied_by(pattern):
@@ -513,8 +570,10 @@ class PolicyEngine:
             m = PathMatcher(value, self.base_dir)
             return m.subject, m.denied_by, m.allowed_by_any
         if category == NETWORK:
-            host = urlparse(value).hostname or value
-            match = lambda p: fnmatch.fnmatch(host, p)  # noqa: E731
+            host = url_host(value)
+            if host is None:
+                return None, None, None
+            match = lambda p: fnmatch.fnmatchcase(host, p.lower().rstrip("."))  # noqa: E731
             return host, match, lambda ps: any(match(p) for p in ps)
         match = lambda p: re.search(p, value) is not None  # noqa: E731
         return value, match, lambda ps: any(match(p) for p in ps)
