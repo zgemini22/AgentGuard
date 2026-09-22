@@ -6,14 +6,16 @@ hash chain: deleting, reordering, or editing any entry breaks the link
 to whatever comes after it, and `verify_audit_log()` can detect that
 offline, without needing anything beyond the file itself — no separate
 signing key, no external ledger. It's the same construction as a
-blockchain's block-linking, minus the consensus problem, because there's
-only ever one writer (this process) and the point isn't to agree on a
-canonical history, just to make silent tampering with an existing one
-detectable.
+blockchain's block-linking, minus the consensus problem: the point
+isn't to agree on a canonical history, just to make silent tampering
+with an existing one detectable. Several proxies may share one log;
+appends take an OS-level lock on the file and re-read the chain's head
+under it, so they extend one chain instead of forking it.
 
-What the chain alone does *not* protect against: an attacker who can
-rewrite the whole file is free to recompute every hash from scratch
-and produce a self-consistent forged chain. Tamper-evidence here means
+What the chain alone does *not* protect against: someone who can write
+the file can delete entries from the end (what's left is still a valid
+chain), append correctly chained entries, or recompute every hash after
+an edit, up to rewriting the whole file. Tamper-evidence here means
 "you can't sneak in a single edit without invalidating everything
 after it," not "the file is cryptographically bound to anything
 outside itself."
@@ -26,13 +28,18 @@ different host, a chat message to yourself, an append-only store.
 `verify-audit --anchor` then checks the chain still passes through
 it. A forged chain can't match an anchor it never saw. What this code
 cannot do is put the anchor out of reach for you; an anchor file on
-the same disk as the log is a convenience, not a guarantee.
+the same disk as the log is a convenience, not a guarantee. With
+`anchor_file` set, the proxy anchors at the start and end of every
+session as well as every `anchor_every` entries, so the tail of a
+finished session is covered.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -60,6 +67,11 @@ class VerificationResult:
     error: Optional[str] = None
     anchors_checked: int = 0
     head_hash: str = GENESIS_HASH
+    # Whether the last entry is a session_end. When it isn't, either a
+    # proxy is still writing or entries were removed from the end — the
+    # chain can't tell which; only an anchor kept elsewhere can.
+    ends_with_session_end: bool = False
+    missing: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,6 +128,9 @@ def verify_audit_log(path: str, anchors: Sequence[Anchor] = ()) -> VerificationR
     hashes: List[str] = []
     expected_prev = GENESIS_HASH
     count = 0
+    last_event = None
+    if not p.exists():
+        return VerificationResult(False, 0, f"no audit log at {path}", missing=True)
     if p.exists():
         with p.open("r", encoding="utf-8") as f:
             for line_no, raw_line in enumerate(f, start=1):
@@ -126,6 +141,8 @@ def verify_audit_log(path: str, anchors: Sequence[Anchor] = ()) -> VerificationR
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     return VerificationResult(False, count, f"line {line_no}: not valid JSON")
+                if not isinstance(entry, dict):
+                    return VerificationResult(False, count, f"line {line_no}: not a JSON object")
 
                 if "hash" not in entry or "prev_hash" not in entry:
                     return VerificationResult(False, count, f"line {line_no}: missing hash/prev_hash field")
@@ -140,6 +157,7 @@ def verify_audit_log(path: str, anchors: Sequence[Anchor] = ()) -> VerificationR
                 expected_prev = entry["hash"]
                 count += 1
                 hashes.append(entry["hash"])
+                last_event = entry.get("event")
 
     for anchor in anchors:
         if anchor.count is not None:
@@ -164,7 +182,40 @@ def verify_audit_log(path: str, anchors: Sequence[Anchor] = ()) -> VerificationR
                 head_hash=expected_prev,
             )
 
-    return VerificationResult(True, count, anchors_checked=len(anchors), head_hash=expected_prev)
+    return VerificationResult(True, count, anchors_checked=len(anchors), head_hash=expected_prev,
+                              ends_with_session_end=(last_event == "session_end"))
+
+
+def _lock(log_fd: int, log_path: Path) -> Optional[int]:
+    """Exclusive, blocking, cross-process lock for appending to the log.
+    POSIX: an advisory flock on the log itself. Windows: byte-range locks
+    there are mandatory — locking the log would stop other handles from
+    even reading it — so a sidecar `<log>.lock` file is locked instead,
+    and its descriptor returned for _unlock."""
+    if os.name == "nt":
+        import msvcrt
+        lock_fd = os.open(str(log_path) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        while True:
+            try:
+                os.lseek(lock_fd, 0, os.SEEK_SET)
+                msvcrt.locking(lock_fd, msvcrt.LK_LOCK, 1)
+                return lock_fd
+            except OSError:
+                continue  # LK_LOCK gives up after ~10s; keep waiting
+    import fcntl
+    fcntl.flock(log_fd, fcntl.LOCK_EX)
+    return None
+
+
+def _unlock(log_fd: int, lock_fd: Optional[int]) -> None:
+    if lock_fd is not None:
+        import msvcrt
+        os.lseek(lock_fd, 0, os.SEEK_SET)
+        msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+        os.close(lock_fd)
+        return
+    import fcntl
+    fcntl.flock(log_fd, fcntl.LOCK_UN)
 
 
 class AuditLog:
@@ -177,6 +228,10 @@ class AuditLog:
         self.path = Path(path)
         self._lock = threading.Lock()
         self._last_hash, self._count = self._load_tail()
+        # The file size after this process last read or wrote the head.
+        # If it differs at the next append, another writer has appended
+        # and the head is re-read (under the file lock) first.
+        self._size = self.path.stat().st_size if self.path.exists() else 0
         # Stamped onto every entry once a session begins, so entries
         # from different runs sharing one log file can be told apart.
         self.session_id: Optional[str] = None
@@ -203,6 +258,16 @@ class AuditLog:
             f.write(line + "\n")
         return line
 
+    def _anchor_quietly(self) -> None:
+        """An anchor the proxy writes on its own. A failure to write one
+        is reported, not fatal: it must not take the proxy down mid-call."""
+        if not self.anchor_file or self._count == 0:
+            return
+        try:
+            self.write_anchor()
+        except OSError as e:
+            print(f"agentguard: could not write anchor to {self.anchor_file}: {e}", file=sys.stderr)
+
     def begin_session(self, session) -> dict:
         """Stamps every subsequent entry with the session id and writes
         the `session_start` entry: what was wrapped, under which policy
@@ -210,11 +275,17 @@ class AuditLog:
         with which AgentGuard."""
         self.session_id = session.id
         entry = {"ts": session.started_at, "event": "session_start", **session.start_metadata()}
-        return self._append(entry)
+        entry = self._append(entry)
+        self._anchor_quietly()
+        return entry
 
     def end_session(self, session, exit_code: int) -> dict:
         entry = {"ts": time.time(), "event": "session_end", **session.end_metadata(exit_code)}
-        return self._append(entry)
+        entry = self._append(entry)
+        # Anchoring the last entry of a session is what makes deleting the
+        # session's tail detectable (with the anchor kept out of reach).
+        self._anchor_quietly()
+        return entry
 
     def _load_tail(self) -> Tuple[str, int]:
         if not self.path.exists():
@@ -229,6 +300,8 @@ class AuditLog:
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
                     continue
                 last_hash = entry.get("hash", last_hash)
                 count += 1
@@ -327,19 +400,41 @@ class AuditLog:
         return self._append(entry)
 
     def _append(self, entry: dict) -> dict:
-        # A single lock around read-last-hash + compute + write keeps the
-        # chain valid under concurrent callers (the proxy's client->server
-        # and server->client threads can both be recording at once).
+        # read-head + compute + write happen under two locks: a thread lock
+        # (the proxy's two pump threads both record) and an OS lock on the
+        # file (other processes may share the log). Under them, the head
+        # is re-read if the file changed since this process last saw it,
+        # so every writer extends the same chain.
         with self._lock:
-            if self.session_id is not None:
-                entry["session_id"] = self.session_id
-            entry["prev_hash"] = self._last_hash
-            entry["hash"] = compute_entry_hash(entry)
-            with self.path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, sort_keys=True) + "\n")
-            self._last_hash = entry["hash"]
-            self._count += 1
-            if self.anchor_file and self._count % self.anchor_every == 0:
-                with open(self.anchor_file, "a", encoding="utf-8") as f:
-                    f.write(f"{time.time():.3f} {self._count} {self._last_hash}\n")
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0), 0o600)
+            try:
+                lock_fd = _lock(fd, self.path)
+                try:
+                    size = os.fstat(fd).st_size
+                    if size != self._size:
+                        self._last_hash, self._count = self._load_tail()
+                    prefix = b""
+                    if size > 0:
+                        os.lseek(fd, size - 1, os.SEEK_SET)
+                        if os.read(fd, 1) != b"\n":
+                            # A partial last line (a writer crashed mid-
+                            # write). Start on a fresh line so this entry
+                            # isn't glued onto it; verify will report the
+                            # partial line for what it is.
+                            prefix = b"\n"
+                    if self.session_id is not None:
+                        entry["session_id"] = self.session_id
+                    entry["prev_hash"] = self._last_hash
+                    entry["hash"] = compute_entry_hash(entry)
+                    os.write(fd, prefix + (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8"))
+                    self._size = os.fstat(fd).st_size
+                    self._last_hash = entry["hash"]
+                    self._count += 1
+                finally:
+                    _unlock(fd, lock_fd)
+            finally:
+                os.close(fd)
+            due = bool(self.anchor_file) and self._count % self.anchor_every == 0
+        if due:  # outside the lock: write_anchor reads the head under it
+            self._anchor_quietly()
         return entry

@@ -28,12 +28,17 @@ def test_second_entry_chains_to_first():
         assert second["prev_hash"] == first["hash"]
 
 
-def test_verify_empty_or_missing_log_is_valid():
+def test_verify_empty_log_is_valid_and_missing_log_is_not():
     with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "nonexistent.log")
-        result = verify_audit_log(path)
+        empty = os.path.join(tmp, "empty.log")
+        open(empty, "w").close()
+        result = verify_audit_log(empty)
         assert result.valid is True
         assert result.entry_count == 0
+        # A log that isn't there proves nothing; it used to verify as OK.
+        missing = verify_audit_log(os.path.join(tmp, "nonexistent.log"))
+        assert missing.valid is False
+        assert missing.missing is True
 
 
 def test_verify_untampered_log_is_valid():

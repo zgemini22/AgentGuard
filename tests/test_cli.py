@@ -72,10 +72,10 @@ def test_verify_audit_on_tampered_log_prints_tampered_and_returns_one(capsys):
         assert "TAMPERED" in capsys.readouterr().out
 
 
-def test_verify_audit_on_missing_log_is_valid_with_zero_entries(capsys):
+def test_verify_audit_on_missing_log_says_missing_and_fails(capsys):
     exit_code = main(["verify-audit", "/nonexistent/audit.log"])
-    assert exit_code == 0
-    assert "OK: 0 entries verified" in capsys.readouterr().out
+    assert exit_code == 1
+    assert "MISSING: no audit log at /nonexistent/audit.log" in capsys.readouterr().out
 
 
 def test_build_parser_defaults():

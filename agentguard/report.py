@@ -157,6 +157,7 @@ def build_report(path: str, session_filter: Optional[str] = None) -> dict:
             "valid": verification.valid,
             "entries": verification.entry_count,
             "error": verification.error,
+            "missing": verification.missing,
         },
         "sessions": selected,
     }
@@ -241,7 +242,9 @@ def render_text(report: dict) -> str:
     out: List[str] = []
     out.append(f"audit log: {report['log']}")
     chain = report["chain"]
-    if chain["valid"]:
+    if chain.get("missing"):
+        out.append(f"chain: MISSING — {chain['error']}")
+    elif chain["valid"]:
         out.append(f"chain: OK, {chain['entries']} entries verified")
     else:
         out.append(f"chain: TAMPERED — {chain['error']} ({chain['entries']} entries verified before the break)")

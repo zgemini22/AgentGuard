@@ -375,9 +375,18 @@ def _verify_audit(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         parser.error(f"could not read anchor file: {e}")
 
     result = verify_audit_log(args.audit_log, anchors)
+    if result.missing:
+        print(f"MISSING: {result.error}")
+        return 1
     if result.valid:
         anchored = f", {result.anchors_checked} anchor(s) matched" if anchors else ""
         print(f"OK: {result.entry_count} entries verified, hash chain intact{anchored}.")
+        if result.entry_count and not result.ends_with_session_end:
+            print("note: the last entry is not a session_end. Either a proxy is still writing, or entries "
+                  "were removed from the end; the chain alone can't tell which — an anchor kept elsewhere can.")
+        elif not anchors:
+            print("note: without an anchor, entries removed from the end, or a log rewritten from scratch, "
+                  "can't be detected. See `agentguard anchor`.")
         return 0
     print(f"TAMPERED: {result.error} (verified {result.entry_count} entries before the break)")
     return 1
@@ -385,8 +394,14 @@ def _verify_audit(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
 
 def _anchor(args: argparse.Namespace) -> int:
     result = verify_audit_log(args.audit_log)
+    if result.missing:
+        print(f"MISSING: {result.error}")
+        return 1
     if not result.valid:
         print(f"TAMPERED: {result.error} — refusing to anchor a broken chain")
+        return 1
+    if result.entry_count == 0:
+        print("the log is empty; there is nothing to anchor yet")
         return 1
     line = f"{result.entry_count} {result.head_hash}"
     print(line)

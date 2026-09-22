@@ -158,8 +158,10 @@ def test_report_on_tampered_log_says_so_and_exits_one(tmp_path, capsys):
 
 
 def test_report_handles_missing_log_and_v1_entries(tmp_path, capsys):
-    assert main(["report", str(tmp_path / "nope.log")]) == 0
-    assert "no sessions found" in capsys.readouterr().out
+    assert main(["report", str(tmp_path / "nope.log")]) == 1
+    out = capsys.readouterr().out
+    assert "chain: MISSING" in out
+    assert "no sessions found" in out
 
     # A v1-era entry: no session_id, no argument_categories.
     log = AuditLog(str(tmp_path / "old.log"))
