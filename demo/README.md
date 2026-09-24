@@ -20,17 +20,13 @@ purposes:
 
 ## Watching the recording
 
-_The recording linked below was made with AgentGuard 0.1 and shows
-scenarios 1–10 of that version. `run_demo.sh` and `record_demo.sh` now
-also show the renamed-argument block (2b) and `agentguard report` (7b);
-re-record per the instructions at the bottom to refresh it._
-
-Watch it online, no install needed:
-**[asciinema.org/a/1265133](https://asciinema.org/a/1265133)**
+The recording was made with AgentGuard 0.2.0 and shows all twelve
+steps of `record_demo.sh`. Watch it online, no install needed:
+**[asciinema.org/a/Wsy4px9o1lnc4FCu](https://asciinema.org/a/Wsy4px9o1lnc4FCu)**
 
 Or play the file in this repo locally — same recording, an
 [asciicast v2](https://docs.asciinema.org/manual/asciicast/v2/), a
-plain-text terminal-only capture (no video, no audio), ~30 seconds, of
+plain-text terminal-only capture (no video, no audio), ~40 seconds, of
 `record_demo.sh` actually running against a real `agentguard` process:
 
 ```bash
@@ -47,6 +43,13 @@ something to patch by hand):
 ```bash
 asciinema rec --command "bash demo/record_demo.sh" \
   --cols 140 --rows 50 --idle-time-limit 2 \
-  --title "AgentGuard: minimal-privilege MCP proxy demo" \
+  --title "AgentGuard <version>: minimal-privilege MCP proxy demo" \
   --overwrite demo/agentguard_demo.cast
 ```
+
+Uploading (`asciinema upload demo/agentguard_demo.cast`) creates a *new*
+recording with a new URL; it never replaces the old one. Update the link
+here, in the top-level README, and anywhere else that shows it, then
+delete the old recording from the asciinema account — otherwise the old
+URL keeps serving the old demo, which is how this link went stale once
+already.

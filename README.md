@@ -506,8 +506,8 @@ returns two fixed, canned pages (no real network access) — and shows:
 10. Verifying again catches it immediately, naming the exact line and
     what's wrong with it.
 
-Watch a recorded run (paced, narrated):
-**[asciinema.org/a/1265133](https://asciinema.org/a/1265133)** — or
+Watch a recorded run of AgentGuard 0.2.0 (paced, narrated, ~40 s):
+**[asciinema.org/a/Wsy4px9o1lnc4FCu](https://asciinema.org/a/Wsy4px9o1lnc4FCu)** — or
 play [`demo/agentguard_demo.cast`](https://github.com/zgemini22/AgentGuard/blob/main/demo/agentguard_demo.cast)
 locally, see [`demo/README.md`](https://github.com/zgemini22/AgentGuard/blob/main/demo/README.md).
 
