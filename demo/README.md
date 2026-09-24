@@ -46,7 +46,7 @@ something to patch by hand):
 
 ```bash
 asciinema rec --command "bash demo/record_demo.sh" \
-  --cols 120 --rows 40 --idle-time-limit 2 \
+  --cols 140 --rows 50 --idle-time-limit 2 \
   --title "AgentGuard: minimal-privilege MCP proxy demo" \
   --overwrite demo/agentguard_demo.cast
 ```

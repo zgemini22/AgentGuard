@@ -4,7 +4,7 @@
 
 _Nothing yet._
 
-## 0.2.0 — 2026-09-22
+## 0.2.0 — 2026-09-24
 
 From a stateless per-call filter to a least-privilege session runtime.
 The direction was "make the guarantees the README already claims

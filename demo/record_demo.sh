@@ -40,7 +40,8 @@ run_and_show() {
 }
 
 clear 2>/dev/null || true
-echo "${BOLD}AgentGuard — a minimal-privilege proxy for AI agent tool calls${RESET}"
+AG_VERSION="$(python3 -c 'import agentguard; print(agentguard.__version__)')"
+echo "${BOLD}AgentGuard ${AG_VERSION} — a minimal-privilege proxy for AI agent tool calls${RESET}"
 note "Wraps an MCP server; every tools/call is checked against policy, output"
 note "is scanned for injected instructions and known secrets, and every"
 note "decision lands in a hash-chained audit log."
@@ -64,7 +65,7 @@ run_and_show \
   python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 header "2b. Same key via read_document(file_location=...) — the argument isn't called 'path'"
-note "The proxy read the server's tools/list schema, so the renamed argument is still a path."
+note "The renamed argument is still classified as a path, from the word 'file' in its name."
 printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
@@ -99,8 +100,16 @@ run_and_show \
   python3 -m agentguard.cli run --config agentguard/policies/default.yaml --audit-log "$AUDIT_LOG" -- python3 demo/vulnerable_server.py
 
 header "7b. What did all of that touch? agentguard report, from the audit log alone"
-python3 -m agentguard.cli report "$AUDIT_LOG" | head -40
-note "(one session per proxy run above; a real agent session is one block)"
+note "One session per proxy run above; a real agent session is one block."
+note "Six sessions in this log. The two that did more than allow or deny:"
+REPORT="$(python3 -m agentguard.cli report "$AUDIT_LOG")"
+session_with() {  # id of the first session whose report has a nonzero "$1" line
+  printf '%s\n' "$REPORT" | awk -v key="$1" '/^== session/ {s=$3} index($0, key ": ") && $NF != "none" {print s; exit}'
+}
+python3 -m agentguard.cli report "$AUDIT_LOG" --session "$(session_with redactions)"
+sleep 1.5
+# the second report's first three lines repeat the log header just shown
+python3 -m agentguard.cli report "$AUDIT_LOG" --session "$(session_with "injection blocks")" | tail -n +4
 sleep 2
 
 header "8. Verify the audit log's hash chain"
