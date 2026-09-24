@@ -72,7 +72,10 @@ def test_id_helpers():
 def test_result_echoed_with_a_string_id_is_still_inspected(tmp_path):
     out, audit, _ = run({"tools/call": [text_result(INJECTION, "__IDSTR__")]}, tmp_path=tmp_path)
     assert INJECTION not in everything(out)
-    assert any(e["event"] == "injection_blocked" for e in audit)
+    # Matched to the call it answers (so it's attributed to the tool and
+    # withheld as a tool result), not just caught as a stray response.
+    assert any(e["event"] == "injection_blocked" and e["tool"] == "fetch_url" for e in audit)
+    assert next(m for m in out if str(m.get("id")) == "2")["result"]["isError"] is True
 
 
 def test_a_decoy_message_reusing_the_id_does_not_consume_the_pending_request(tmp_path):
